@@ -12,6 +12,10 @@ services:
         sync: false
       - key: FRONTEND_URL
         sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: TOKEN_SECRET
+        sync: false
 
   - type: web
     name: vigia-web
