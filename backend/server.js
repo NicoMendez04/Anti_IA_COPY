@@ -61,7 +61,8 @@ function publicSession(session) {
     startedAt: session.startedAt,
     endsAt: session.endsAt,
     students: [...session.students.values()],
-    alerts: session.alerts
+    alerts: session.alerts,
+    helpRequests: session.helpRequests
   };
 }
 
@@ -135,6 +136,7 @@ app.post('/api/sessions', requireAuth('profesor'), async (req, res) => {
     endsAt: null,
     students: new Map(),
     alerts: [],
+    helpRequests: [],
     qrCode,
     qrData
   };
@@ -166,6 +168,7 @@ app.post('/api/sessions/:sessionId/expel/:studentId', requireAuth('profesor'), (
   const student = session.students.get(req.params.studentId);
   if (!student) return res.status(404).json({ message: 'Estudiante no encontrado.' });
   student.status = 'expelled';
+  session.helpRequests = session.helpRequests.filter((request) => request.studentId !== student.studentId);
   io.to(student.socketId).emit('student:expelled', { reason: 'expelled_by_professor' });
   emitSession(session);
   res.json({ success: true });
@@ -243,15 +246,59 @@ io.on('connection', (socket) => {
     emitSession(session);
   });
 
+  socket.on('student:help_request', ({ sessionId }) => {
+    const session = sessions.get(sessionId);
+    const student = session?.students.get(socket.data?.studentId);
+    if (!session || !student || student.status !== 'active') return;
+    if (session.helpRequests.some((request) => request.studentId === student.studentId)) return;
+    const request = { requestId: randomUUID(), studentId: student.studentId, studentName: student.name, requestedAt: new Date().toISOString() };
+    session.helpRequests.push(request);
+    io.to(sessionId).emit('help:requested', request);
+    emitSession(session);
+  });
+
+  socket.on('student:help_cancel', ({ sessionId }) => {
+    const session = sessions.get(sessionId);
+    const student = session?.students.get(socket.data?.studentId);
+    if (!session || !student) return;
+    const hadRequest = session.helpRequests.some((request) => request.studentId === student.studentId);
+    if (!hadRequest) return;
+    session.helpRequests = session.helpRequests.filter((request) => request.studentId !== student.studentId);
+    io.to(sessionId).emit('help:cancelled', { studentId: student.studentId });
+    emitSession(session);
+  });
+
+  socket.on('professor:resolve_help', ({ sessionId, requestId, token }) => {
+    const session = sessions.get(sessionId);
+    if (!session) return socket.emit('session:error', { message: 'Sesión no encontrada.' });
+    const auth = token ? authTokens.get(token) : null;
+    if (!auth || auth.role !== 'profesor' || auth.email !== session.professorEmail) {
+      return socket.emit('session:error', { message: 'No autorizado.' });
+    }
+    const request = session.helpRequests.find((item) => item.requestId === requestId);
+    if (!request) return;
+    session.helpRequests = session.helpRequests.filter((item) => item.requestId !== requestId);
+    const student = session.students.get(request.studentId);
+    if (student) io.to(student.socketId).emit('help:resolved', { requestId });
+    emitSession(session);
+  });
+
   socket.on('disconnect', () => {
     const { sessionId, studentId } = socket.data ?? {};
     const session = sessions.get(sessionId);
     const student = session?.students.get(studentId);
-    if (session && student && student.status === 'active') {
+    if (!session) return;
+    let changed = false;
+    if (student && student.status === 'active') {
       student.status = 'offline';
       io.to(sessionId).emit('student:left', student);
-      emitSession(session);
+      changed = true;
     }
+    if (studentId && session.helpRequests.some((request) => request.studentId === studentId)) {
+      session.helpRequests = session.helpRequests.filter((request) => request.studentId !== studentId);
+      changed = true;
+    }
+    if (changed) emitSession(session);
   });
 });
 
