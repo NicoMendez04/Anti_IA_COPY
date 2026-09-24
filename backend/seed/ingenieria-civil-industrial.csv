@@ -1,0 +1,61 @@
+carrera;especialidad;codigo;ramo;semestre;categoria
+Ingeniería Civil Industrial;Matemática;;Introducción a las Matemáticas;1;Ciencias básicas y/o Transversales
+Ingeniería Civil Industrial;Matemática;;Cálculo Diferencial;2;Ciencias básicas y/o Transversales
+Ingeniería Civil Industrial;Matemática;;Cálculo Integral;3;Ciencias básicas y/o Transversales
+Ingeniería Civil Industrial;Matemática;;Sistemas y Ecuaciones Diferenciales Lineales;4;Ciencias básicas y/o Transversales
+Ingeniería Civil Industrial;Matemática;;Investigación de Operaciones;5;Ámbito I: Sistemas Productivos y de Servicios
+Ingeniería Civil Industrial;Matemática;;Métodos Cuantitativos;5;Ámbito III: Transformación Digital
+Ingeniería Civil Industrial;Matemática;;Redes y Sistemas Estocásticos en Ingeniería;6;Ámbito I: Sistemas Productivos y de Servicios
+Ingeniería Civil Industrial;Matemática;;Toma de Decisiones Bajo Incertidumbre;7;Ámbito I: Sistemas Productivos y de Servicios
+Ingeniería Civil Industrial;Física;;Física General;1;Ciencias básicas y/o Transversales
+Ingeniería Civil Industrial;Física;;Física Experimental;2;Ciencias básicas y/o Transversales
+Ingeniería Civil Industrial;Física;;Mecánica;3;Ciencias básicas y/o Transversales
+Ingeniería Civil Industrial;Física;;Electricidad y Magnetismo;4;Ciencias básicas y/o Transversales
+Ingeniería Civil Industrial;Química y Procesos;;Química y Ambiente;2;Ciencias básicas y/o Transversales
+Ingeniería Civil Industrial;Química y Procesos;;Procesos Industriales;3;Ámbito I: Sistemas Productivos y de Servicios
+Ingeniería Civil Industrial;Química y Procesos;;Economía Circular;5;Ámbito I: Sistemas Productivos y de Servicios
+Ingeniería Civil Industrial;Informática y Ciencia de Datos;;Introducción a la Programación;1;Ámbito III: Transformación Digital
+Ingeniería Civil Industrial;Informática y Ciencia de Datos;;Base de Datos;2;Ámbito III: Transformación Digital
+Ingeniería Civil Industrial;Informática y Ciencia de Datos;;Minería de Datos;6;Ámbito III: Transformación Digital
+Ingeniería Civil Industrial;Informática y Ciencia de Datos;;Gestión de la Transformación Digital;7;Ámbito III: Transformación Digital
+Ingeniería Civil Industrial;Informática y Ciencia de Datos;;Analítica;8;Ámbito I: Sistemas Productivos y de Servicios
+Ingeniería Civil Industrial;Informática y Ciencia de Datos;;Simulación de Sistemas;8;Ámbito I: Sistemas Productivos y de Servicios
+Ingeniería Civil Industrial;Informática y Ciencia de Datos;;Inteligencia de Negocios;9;Ámbito I: Sistemas Productivos y de Servicios
+Ingeniería Civil Industrial;Operaciones y Cadena de Suministro;;Procesos Industriales;3;Ámbito I: Sistemas Productivos y de Servicios
+Ingeniería Civil Industrial;Operaciones y Cadena de Suministro;;Investigación de Operaciones;5;Ámbito I: Sistemas Productivos y de Servicios
+Ingeniería Civil Industrial;Operaciones y Cadena de Suministro;;Gestión de la Cadena de Suministro;6;Ámbito I: Sistemas Productivos y de Servicios
+Ingeniería Civil Industrial;Operaciones y Cadena de Suministro;;Redes y Sistemas Estocásticos en Ingeniería;6;Ámbito I: Sistemas Productivos y de Servicios
+Ingeniería Civil Industrial;Operaciones y Cadena de Suministro;;Toma de Decisiones Bajo Incertidumbre;7;Ámbito I: Sistemas Productivos y de Servicios
+Ingeniería Civil Industrial;Operaciones y Cadena de Suministro;;Toma de Decisiones en la Cadena de Suministro;7;Ámbito I: Sistemas Productivos y de Servicios
+Ingeniería Civil Industrial;Operaciones y Cadena de Suministro;;Estrategia y Sustentabilidad en Cadena de Suministro;8;Ámbito I: Sistemas Productivos y de Servicios
+Ingeniería Civil Industrial;Operaciones y Cadena de Suministro;;Simulación de Sistemas;8;Ámbito I: Sistemas Productivos y de Servicios
+Ingeniería Civil Industrial;Economía y Finanzas;;Economía;5;Ámbito I: Sistemas Productivos y de Servicios
+Ingeniería Civil Industrial;Economía y Finanzas;;Costos y Presupuestos;6;Ámbito II: Evaluación de Proyectos de Inversión
+Ingeniería Civil Industrial;Economía y Finanzas;;Ingeniería Económica;7;Ámbito II: Evaluación de Proyectos de Inversión
+Ingeniería Civil Industrial;Economía y Finanzas;;Evaluación de Proyectos;8;Ámbito II: Evaluación de Proyectos de Inversión
+Ingeniería Civil Industrial;Economía y Finanzas;;Finanzas Corporativas;9;Ámbito I: Sistemas Productivos y de Servicios
+Ingeniería Civil Industrial;Gestión y Estrategia;;Compliance & Accountability;3;Ámbito III: Transformación Digital
+Ingeniería Civil Industrial;Gestión y Estrategia;;Costos y Presupuestos;6;Ámbito II: Evaluación de Proyectos de Inversión
+Ingeniería Civil Industrial;Gestión y Estrategia;;Responsabilidad Social;7;Educación General e Inglés
+Ingeniería Civil Industrial;Gestión y Estrategia;;Estrategia y Sustentabilidad en Cadena de Suministro;8;Ámbito I: Sistemas Productivos y de Servicios
+Ingeniería Civil Industrial;Gestión y Estrategia;;Gestión Estratégica;9;Ámbito I: Sistemas Productivos y de Servicios
+Ingeniería Civil Industrial;Gestión y Estrategia;;Marketing;9;Ámbito I: Sistemas Productivos y de Servicios
+Ingeniería Civil Industrial;Innovación, Proyectos y Práctica;;Introducción a la Ingeniería;1;Ámbito III: Transformación Digital
+Ingeniería Civil Industrial;Innovación, Proyectos y Práctica;;Taller de Innovación y Emprendimiento I;3;Ámbito II: Evaluación de Proyectos de Inversión
+Ingeniería Civil Industrial;Innovación, Proyectos y Práctica;;Práctica I;4;Experiencias Integradoras
+Ingeniería Civil Industrial;Innovación, Proyectos y Práctica;;Taller de Innovación y Emprendimiento II;4;Ámbito II: Evaluación de Proyectos de Inversión
+Ingeniería Civil Industrial;Innovación, Proyectos y Práctica;;Taller de Innovación y Emprendimiento III;6;Ámbito II: Evaluación de Proyectos de Inversión
+Ingeniería Civil Industrial;Innovación, Proyectos y Práctica;;Práctica II;8;Experiencias Integradoras
+Ingeniería Civil Industrial;Innovación, Proyectos y Práctica;;Seminario de Licenciatura en Ciencias de la Ingeniería;8;Experiencias Integradoras
+Ingeniería Civil Industrial;Innovación, Proyectos y Práctica;;Portafolio de Proyectos;9;Ámbito I: Sistemas Productivos y de Servicios
+Ingeniería Civil Industrial;Innovación, Proyectos y Práctica;;Tópicos de Especialidad I;9;Ámbito I: Sistemas Productivos y de Servicios
+Ingeniería Civil Industrial;Innovación, Proyectos y Práctica;;Proyecto de Título;10;Experiencias Integradoras
+Ingeniería Civil Industrial;Innovación, Proyectos y Práctica;;Tópicos de Especialidad II;10;Ámbito I: Sistemas Productivos y de Servicios
+Ingeniería Civil Industrial;Innovación, Proyectos y Práctica;;Tópicos de Especialidad III;10;Ámbito I: Sistemas Productivos y de Servicios
+Ingeniería Civil Industrial;Inglés;;Inglés I;4;Educación General e Inglés
+Ingeniería Civil Industrial;Inglés;;Inglés II;5;Educación General e Inglés
+Ingeniería Civil Industrial;Inglés;;Inglés III;6;Educación General e Inglés
+Ingeniería Civil Industrial;Inglés;;Inglés IV;7;Educación General e Inglés
+Ingeniería Civil Industrial;Comunicación y Formación General;;Habilidades Comunicativas;2;Educación General e Inglés
+Ingeniería Civil Industrial;Comunicación y Formación General;;Compliance & Accountability;3;Ámbito III: Transformación Digital
+Ingeniería Civil Industrial;Comunicación y Formación General;;Responsabilidad Social;7;Educación General e Inglés
