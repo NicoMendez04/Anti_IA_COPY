@@ -13,9 +13,15 @@ frontend/dist/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+backend/logs/
+backend/data/
 
 # OS and editor files
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
+
+# Firebase credentials
+backend/firebase-service-account.json
+*-firebase-adminsdk-*.json
