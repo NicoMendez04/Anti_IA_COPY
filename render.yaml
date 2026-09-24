@@ -1,24 +1,38 @@
 services:
   - type: web
-    name: vigia-api
+    name: anti-ia-copy
     runtime: node
+    region: virginia
+    branch: develop
     rootDir: backend
     buildCommand: npm install
     startCommand: npm start
+    healthCheckPath: /api/health
     envVars:
       - key: NODE_ENV
         value: production
       - key: PUBLIC_APP_URL
         sync: false
-      - key: FRONTEND_URL
+      - key: ADMIN_EMAILS
+        sync: false
+      - key: ALLOWED_EMAIL_DOMAINS
+        sync: false
+      - key: FIREBASE_SERVICE_ACCOUNT
         sync: false
 
   - type: web
-    name: vigia-web
+    name: anti-ia-copy-1
     runtime: static
+    branch: develop
     rootDir: frontend
     buildCommand: npm install && npm run build
     staticPublishPath: dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
     envVars:
       - key: VITE_API_URL
+        value: https://anti-ia-copy.onrender.com
+      - key: VITE_MS_TENANT
         sync: false

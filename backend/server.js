@@ -5,50 +5,26 @@ import http from 'node:http';
 import QRCode from 'qrcode';
 import { Server } from 'socket.io';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import bcrypt from 'bcryptjs';
+import { authFromToken, registerAccountRoutes, requireAuth } from './accounts.js';
+import { persistSession, registerRecordRoutes } from './records.js';
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: { origin: true }
+  cors: { origin: true },
+  pingInterval: 10_000,
+  pingTimeout: 8_000
 });
 
 const sessions = new Map();
-const authTokens = new Map();
 const PORT = Number(process.env.PORT ?? 3001);
 const corsOptions = { origin: true };
 
+app.set('trust proxy', 1);
 app.use(cors(corsOptions));
 app.use(express.json());
-
-const DATA_DIR = path.join(process.cwd(), 'data');
-const USERS_FILE = path.join(DATA_DIR, 'users.json');
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-let users = {};
-try {
-  users = JSON.parse(await readFile(USERS_FILE, 'utf8'));
-} catch (err) {
-  if (err.code !== 'ENOENT') console.error('No se pudo leer users.json:', err);
-}
-
-async function saveUsers() {
-  await mkdir(DATA_DIR, { recursive: true });
-  await writeFile(USERS_FILE, JSON.stringify(users, null, 2), 'utf8');
-}
-
-function requireAuth(role) {
-  return (req, res, next) => {
-    const header = req.get('authorization') || '';
-    const token = header.startsWith('Bearer ') ? header.slice(7) : null;
-    const auth = token ? authTokens.get(token) : null;
-    if (!auth || auth.role !== role) return res.status(401).json({ message: 'Debes iniciar sesión.' });
-    req.auth = auth;
-    next();
-  };
-}
 
 function publicSession(session) {
   return {
@@ -64,6 +40,19 @@ function publicSession(session) {
     alerts: session.alerts,
     helpRequests: session.helpRequests
   };
+}
+
+function recordAlert(session, student, type, message) {
+  const alert = { alertId: randomUUID(), studentId: student.studentId, studentName: student.name, type, timestamp: new Date().toISOString(), message };
+  session.alerts.unshift(alert);
+  io.to(session.sessionId).emit('alert:triggered', alert);
+  return alert;
+}
+
+function formatAway(seconds) {
+  if (seconds < 60) return `${seconds} s`;
+  const minutes = Math.floor(seconds / 60);
+  return minutes < 60 ? `${minutes} min ${seconds % 60} s` : `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
 }
 
 function emitSession(session) {
@@ -84,36 +73,8 @@ async function saveSessionLog(session) {
 
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
 
-app.post('/api/auth/login', async (req, res) => {
-  const { password, role } = req.body;
-  const email = String(req.body.email ?? '').trim().toLowerCase();
-  if (!EMAIL_RE.test(email)) return res.status(400).json({ message: 'Ingresa un correo válido.' });
-  if (!password || password.length < 6) return res.status(400).json({ message: 'La contraseña debe tener al menos 6 caracteres.' });
-  if (!['profesor', 'estudiante'].includes(role)) return res.status(400).json({ message: 'Rol inválido.' });
-
-  const existing = users[email];
-  if (existing) {
-    if (existing.role !== role) return res.status(409).json({ message: `Ese correo ya está registrado como ${existing.role}.` });
-    const valid = await bcrypt.compare(password, existing.passwordHash);
-    if (!valid) return res.status(401).json({ message: 'Contraseña incorrecta.' });
-  } else {
-    const passwordHash = await bcrypt.hash(password, 10);
-    users[email] = { passwordHash, role, createdAt: new Date().toISOString() };
-    await saveUsers();
-  }
-
-  const token = randomUUID();
-  authTokens.set(token, { email, role });
-  res.json({ token, email, role });
-});
-
-app.get('/api/auth/me', (req, res) => {
-  const header = req.get('authorization') || '';
-  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
-  const auth = token ? authTokens.get(token) : null;
-  if (!auth) return res.status(401).json({ message: 'Sesión no válida.' });
-  res.json(auth);
-});
+registerAccountRoutes(app);
+registerRecordRoutes(app, sessions);
 
 app.post('/api/sessions', requireAuth('profesor'), async (req, res) => {
   const { professorName, examName, duration = 60 } = req.body;
@@ -126,6 +87,7 @@ app.post('/api/sessions', requireAuth('profesor'), async (req, res) => {
   const qrCode = await QRCode.toDataURL(qrData, { margin: 2, width: 320 });
   const session = {
     sessionId,
+    professorUid: req.auth.uid,
     professorEmail: req.auth.email,
     professorName: professorName.trim(),
     examName: examName.trim(),
@@ -134,6 +96,7 @@ app.post('/api/sessions', requireAuth('profesor'), async (req, res) => {
     status: 'waiting',
     startedAt: null,
     endsAt: null,
+    endedAt: null,
     students: new Map(),
     alerts: [],
     helpRequests: [],
@@ -141,6 +104,7 @@ app.post('/api/sessions', requireAuth('profesor'), async (req, res) => {
     qrData
   };
   sessions.set(sessionId, session);
+  persistSession(session);
   res.status(201).json({ ...publicSession(session), qrCode, qrData });
 });
 
@@ -155,9 +119,11 @@ app.delete('/api/sessions/:sessionId', requireAuth('profesor'), async (req, res)
   if (!session) return res.status(404).json({ message: 'Sesión no encontrada.' });
   if (session.professorEmail !== req.auth.email) return res.status(403).json({ message: 'No puedes finalizar una sesión que no creaste.' });
   session.status = 'ended';
+  session.endedAt = new Date().toISOString();
   io.to(session.sessionId).emit('session:ended', { reason: 'manual_close' });
   emitSession(session);
   await saveSessionLog(session);
+  await persistSession(session);
   res.json({ success: true });
 });
 
@@ -171,6 +137,7 @@ app.post('/api/sessions/:sessionId/expel/:studentId', requireAuth('profesor'), (
   session.helpRequests = session.helpRequests.filter((request) => request.studentId !== student.studentId);
   io.to(student.socketId).emit('student:expelled', { reason: 'expelled_by_professor' });
   emitSession(session);
+  persistSession(session);
   res.json({ success: true });
 });
 
@@ -181,6 +148,7 @@ function startSession(session) {
   session.startedAt = startedAt.toISOString();
   session.endsAt = new Date(startedAt.getTime() + session.duration * 60_000).toISOString();
   emitSession(session);
+  persistSession(session);
   return true;
 }
 
@@ -189,18 +157,25 @@ setInterval(() => {
   for (const session of sessions.values()) {
     if (session.status === 'active' && session.endsAt && Date.parse(session.endsAt) <= now) {
       session.status = 'ended';
+      session.endedAt = new Date().toISOString();
       io.to(session.sessionId).emit('session:ended', { reason: 'time_expired' });
       emitSession(session);
       saveSessionLog(session);
+      persistSession(session);
     }
   }
 }, 1000);
 
+// Respaldo periódico de los exámenes en curso, por si el servidor se reinicia.
+setInterval(() => {
+  for (const session of sessions.values()) if (session.status === 'active') persistSession(session);
+}, 30_000);
+
 io.on('connection', (socket) => {
-  socket.on('professor:join', ({ sessionId, token }) => {
+  socket.on('professor:join', async ({ sessionId, token }) => {
     const session = sessions.get(sessionId);
     if (!session) return socket.emit('session:error', { message: 'Sesión no encontrada.' });
-    const auth = token ? authTokens.get(token) : null;
+    const auth = await authFromToken(token);
     if (!auth || auth.role !== 'profesor' || auth.email !== session.professorEmail) {
       return socket.emit('session:error', { message: 'No autorizado.' });
     }
@@ -208,40 +183,62 @@ io.on('connection', (socket) => {
     socket.emit('session:updated', publicSession(session));
   });
 
-  socket.on('professor:start', ({ sessionId, token }) => {
+  socket.on('professor:start', async ({ sessionId, token }) => {
     const session = sessions.get(sessionId);
     if (!session) return socket.emit('session:error', { message: 'Sesión no encontrada.' });
-    const auth = token ? authTokens.get(token) : null;
+    const auth = await authFromToken(token);
     if (!auth || auth.role !== 'profesor' || auth.email !== session.professorEmail) {
       return socket.emit('session:error', { message: 'No autorizado.' });
     }
     if (!startSession(session)) return socket.emit('session:error', { message: 'La sesión ya fue iniciada o finalizada.' });
   });
 
-  socket.on('student:join', ({ sessionId, name, token }) => {
-    const auth = token ? authTokens.get(token) : null;
+  socket.on('student:join', async ({ sessionId, name, token }) => {
+    const auth = await authFromToken(token);
     if (!auth || auth.role !== 'estudiante') return socket.emit('session:error', { message: 'Debes iniciar sesión para unirte.' });
     const session = sessions.get(sessionId);
     if (!session || !['waiting', 'active'].includes(session.status)) {
       return socket.emit('session:error', { message: 'Esta sesión ya no está disponible.' });
     }
-    const studentId = `student_${randomUUID().slice(0, 8)}`;
-    const student = { studentId, socketId: socket.id, name: name.trim(), email: auth.email, joinedAt: new Date().toISOString(), status: 'active' };
-    session.students.set(studentId, student);
-    socket.data = { sessionId, studentId };
+
+    // Se identifica al alumno por su cuenta: reconectar o reabrir el enlace retoma su registro.
+    let student = [...session.students.values()].find((item) => item.uid === auth.uid);
+    if (student?.status === 'expelled') return socket.emit('session:error', { message: 'Fuiste expulsado de esta sesión y no puedes volver a entrar.' });
+
+    if (student) {
+      const previous = io.sockets.sockets.get(student.socketId);
+      if (previous && previous.id !== socket.id) {
+        previous.data.replaced = true;
+        previous.emit('student:replaced');
+        previous.disconnect(true);
+        if (session.status === 'active') recordAlert(session, student, 'second_device', 'Abrió la sesión en otro dispositivo o pestaña');
+      } else if (student.status === 'offline' && session.status === 'active') {
+        const away = Math.max(0, Math.round((Date.now() - Date.parse(student.leftAt ?? student.joinedAt)) / 1000));
+        recordAlert(session, student, 'reconnected', `Volvió a la sesión tras ${formatAway(away)} desconectado`);
+      }
+      student.socketId = socket.id;
+      student.status = 'active';
+      student.leftAt = null;
+    } else {
+      const studentId = `student_${randomUUID().slice(0, 8)}`;
+      const cleanName = String(name ?? '').trim() || auth.name || 'Estudiante';
+      student = { studentId, uid: auth.uid, socketId: socket.id, name: cleanName, email: auth.email, joinedAt: new Date().toISOString(), leftAt: null, status: 'active' };
+      session.students.set(studentId, student);
+    }
+
+    socket.data = { sessionId, studentId: student.studentId };
     socket.join(sessionId);
-    socket.emit('session:connected', { sessionId, studentId, students: [...session.students.values()] });
+    socket.emit('session:connected', { sessionId, studentId: student.studentId, students: [...session.students.values()] });
     io.to(sessionId).emit('student:joined', student);
     emitSession(session);
+    persistSession(session);
   });
 
   socket.on('student:event', ({ sessionId, type, message }) => {
     const session = sessions.get(sessionId);
     const student = session?.students.get(socket.data.studentId);
-    if (!session || !student) return;
-    const alert = { alertId: randomUUID(), studentId: student.studentId, studentName: student.name, type, timestamp: new Date().toISOString(), message: message || 'Actividad registrada' };
-    session.alerts.unshift(alert);
-    io.to(sessionId).emit('alert:triggered', alert);
+    if (!session || !student || student.socketId !== socket.id) return;
+    const alert = recordAlert(session, student, type, message || 'Actividad registrada');
     socket.emit('alert:recorded', alert);
     emitSession(session);
   });
@@ -268,10 +265,10 @@ io.on('connection', (socket) => {
     emitSession(session);
   });
 
-  socket.on('professor:resolve_help', ({ sessionId, requestId, token }) => {
+  socket.on('professor:resolve_help', async ({ sessionId, requestId, token }) => {
     const session = sessions.get(sessionId);
     if (!session) return socket.emit('session:error', { message: 'Sesión no encontrada.' });
-    const auth = token ? authTokens.get(token) : null;
+    const auth = await authFromToken(token);
     if (!auth || auth.role !== 'profesor' || auth.email !== session.professorEmail) {
       return socket.emit('session:error', { message: 'No autorizado.' });
     }
@@ -287,18 +284,25 @@ io.on('connection', (socket) => {
     const { sessionId, studentId } = socket.data ?? {};
     const session = sessions.get(sessionId);
     const student = session?.students.get(studentId);
-    if (!session) return;
+    if (!session || !student) return;
+    // Un socket reemplazado por otro (misma cuenta) ya no representa al alumno.
+    if (socket.data.replaced || student.socketId !== socket.id) return;
     let changed = false;
-    if (student && student.status === 'active') {
+    if (student.status === 'active') {
       student.status = 'offline';
+      student.leftAt = new Date().toISOString();
+      if (session.status === 'active') recordAlert(session, student, 'disconnected', 'Se desconectó de la sesión (cerró la pestaña, apagó el equipo o perdió la conexión)');
       io.to(sessionId).emit('student:left', student);
       changed = true;
     }
-    if (studentId && session.helpRequests.some((request) => request.studentId === studentId)) {
+    if (session.helpRequests.some((request) => request.studentId === studentId)) {
       session.helpRequests = session.helpRequests.filter((request) => request.studentId !== studentId);
       changed = true;
     }
-    if (changed) emitSession(session);
+    if (changed) {
+      emitSession(session);
+      persistSession(session);
+    }
   });
 });
 

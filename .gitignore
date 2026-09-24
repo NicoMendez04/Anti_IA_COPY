@@ -21,3 +21,7 @@ backend/data/
 Thumbs.db
 .vscode/
 .idea/
+
+# Firebase credentials
+backend/firebase-service-account.json
+*-firebase-adminsdk-*.json
