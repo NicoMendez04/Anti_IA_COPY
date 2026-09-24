@@ -10,6 +10,7 @@ import path from 'node:path';
 import { authFromToken, getUserProfile, registerAccountRoutes, requireAuth } from './accounts.js';
 import { registerCatalogRoutes, resolveCourse } from './catalog.js';
 import { logEvent, persistSession, registerRecordRoutes } from './records.js';
+import { limitGuestRegistrations, normalizeRut, signGuestToken, verifyGuestToken } from './guest.js';
 
 const app = express();
 const server = http.createServer(app);
@@ -27,6 +28,11 @@ app.set('trust proxy', 1);
 app.use(cors(corsOptions));
 app.use(express.json());
 
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const profRoom = (session) => `${session.sessionId}:prof`;
+const stuRoom = (session) => `${session.sessionId}:stu`;
+
+// Lo que ve el profesor: alumnos con sus datos, alertas y pedidos de ayuda.
 function publicSession(session) {
   return {
     sessionId: session.sessionId,
@@ -39,18 +45,42 @@ function publicSession(session) {
     status: session.status,
     startedAt: session.startedAt,
     endsAt: session.endsAt,
-    students: [...session.students.values()],
+    students: [...session.students.values()].map(({ socketId, ...student }) => student),
     alerts: session.alerts,
     helpRequests: session.helpRequests
   };
 }
 
+// Lo que ve un alumno: nunca los datos, correos ni alertas de sus compañeros.
+function studentView(session) {
+  return {
+    sessionId: session.sessionId,
+    professorName: session.professorName,
+    examName: session.examName,
+    courseName: session.courseName ?? null,
+    description: session.description ?? '',
+    duration: session.duration,
+    status: session.status,
+    startedAt: session.startedAt,
+    endsAt: session.endsAt,
+    students: [...session.students.values()].map(({ studentId, status }) => ({ studentId, status }))
+  };
+}
+
+// Gravedad de cada tipo de alerta; lo que el cliente envíe fuera de esta lista se registra como "other".
+const ALERT_SEVERITY = {
+  tab_switch: 'warning', window_blur: 'warning', screen_lock: 'warning', context_menu: 'warning', shortcut: 'warning',
+  copy: 'critical', cut: 'critical', paste: 'critical', print: 'critical', screenshot_key: 'critical',
+  disconnected: 'critical', second_device: 'critical',
+  returned: 'info', reconnected: 'info', orientation_change: 'info', idle: 'info', other: 'info'
+};
+
 const PRESENCE_ALERTS = new Set(['disconnected', 'reconnected', 'second_device']);
 
 function recordAlert(session, student, type, message) {
-  const alert = { alertId: randomUUID(), studentId: student.studentId, studentName: student.name, type, timestamp: new Date().toISOString(), message };
+  const alert = { alertId: randomUUID(), studentId: student.studentId, studentName: student.name, type, severity: ALERT_SEVERITY[type] ?? 'info', timestamp: new Date().toISOString(), message };
   session.alerts.unshift(alert);
-  io.to(session.sessionId).emit('alert:triggered', alert);
+  io.to(profRoom(session)).emit('alert:triggered', alert);
   // Desconexión, reconexión y segundo dispositivo ya quedan como eventos de presencia.
   if (!PRESENCE_ALERTS.has(type)) logEvent(session.sessionId, 'alert', { student, data: { alertType: type, message } });
   return alert;
@@ -63,7 +93,8 @@ function formatAway(seconds) {
 }
 
 function emitSession(session) {
-  io.to(session.sessionId).emit('session:updated', publicSession(session));
+  io.to(profRoom(session)).emit('session:updated', publicSession(session));
+  io.to(stuRoom(session)).emit('session:updated', studentView(session));
 }
 
 const LOGS_DIR = path.join(process.cwd(), 'logs');
@@ -85,13 +116,13 @@ registerRecordRoutes(app, sessions);
 registerCatalogRoutes(app);
 
 app.post('/api/sessions', requireAuth('profesor', 'admin'), async (req, res) => {
-  const { examName, duration = 60, courseId } = req.body;
+  const { examName, duration = 60, courseId, customCourseName } = req.body;
   if (!examName?.trim()) return res.status(400).json({ message: 'El nombre del examen es obligatorio.' });
 
   // El nombre sale del perfil de quien inició sesión y el ramo debe pertenecer a sus áreas de profesorado.
   const profile = (await getUserProfile(req.auth.uid)) ?? {};
   const professorName = profile.name?.trim() || req.auth.name || req.auth.email;
-  const resolved = await resolveCourse({ courseId, professorSpecialtyIds: profile.specialtyIds ?? [], isAdmin: req.auth.role === 'admin' });
+  const resolved = await resolveCourse({ courseId, customCourseName, professorSpecialtyIds: profile.specialtyIds ?? [], isAdmin: req.auth.role === 'admin' });
   if (resolved.error) return res.status(400).json({ message: resolved.error });
   const { course, specialties } = resolved;
 
@@ -106,6 +137,7 @@ app.post('/api/sessions', requireAuth('profesor', 'admin'), async (req, res) => 
     examName: examName.trim(),
     description: String(req.body.description ?? '').trim().slice(0, 500),
     courseId: course?.id ?? null,
+    courseCustom: course?.custom === true,
     courseName: course?.name ?? null,
     courseCode: course?.code ?? null,
     career: course?.career ?? null,
@@ -136,7 +168,33 @@ app.post('/api/sessions', requireAuth('profesor', 'admin'), async (req, res) => 
 app.get('/api/sessions/:sessionId', (req, res) => {
   const session = sessions.get(req.params.sessionId);
   if (!session) return res.status(404).json({ message: 'Sesión no encontrada.' });
-  res.json({ ...publicSession(session), qrCode: session.qrCode, qrData: session.qrData });
+  res.json(studentView(session));
+});
+
+// Ingreso de un alumno por el QR, sin cuenta: nombre, correo y RUT que el profesor validará después.
+app.post('/api/sessions/:sessionId/guest', limitGuestRegistrations, async (req, res) => {
+  const session = sessions.get(req.params.sessionId);
+  if (!session) return res.status(404).json({ message: 'La sesión no existe o ya terminó.' });
+  if (!['waiting', 'active'].includes(session.status)) return res.status(409).json({ message: 'Esta sesión ya finalizó.' });
+
+  const name = String(req.body.name ?? '').trim().replace(/\s+/g, ' ');
+  const email = String(req.body.email ?? '').trim().toLowerCase();
+  const rut = normalizeRut(req.body.rut);
+  if (name.length < 3 || name.length > 80) return res.status(400).json({ message: 'Ingresa tu nombre completo.' });
+  if (!EMAIL_RE.test(email)) return res.status(400).json({ message: 'Ingresa un correo válido.' });
+  if (!rut) return res.status(400).json({ message: 'El RUT no es válido. Revisa el número y el dígito verificador.' });
+
+  const existing = [...session.students.values()].find((item) => item.identityKey === `rut:${rut}`);
+  if (existing?.status === 'expelled') return res.status(403).json({ message: 'Fuiste expulsado de esta sesión y no puedes volver a entrar.' });
+  if (existing && existing.email !== email) return res.status(409).json({ message: 'Ese RUT ya está registrado en esta sesión con otro correo.' });
+
+  // Si además tiene una cuenta activa, el examen queda ligado a ella y aparece en su historial.
+  const header = req.get('authorization') || '';
+  const account = header.startsWith('Bearer ') ? await authFromToken(header.slice(7)) : null;
+  const uid = account?.role === 'estudiante' ? account.uid : null;
+
+  const fullName = existing?.name ?? name;
+  res.json({ token: signGuestToken({ sid: session.sessionId, rut, name: fullName, email, uid }), student: { name: fullName, email, rut }, session: studentView(session) });
 });
 
 app.delete('/api/sessions/:sessionId', requireAuth('profesor', 'admin'), async (req, res) => {
@@ -145,7 +203,7 @@ app.delete('/api/sessions/:sessionId', requireAuth('profesor', 'admin'), async (
   if (session.professorEmail !== req.auth.email) return res.status(403).json({ message: 'No puedes finalizar una sesión que no creaste.' });
   session.status = 'ended';
   session.endedAt = new Date().toISOString();
-  io.to(session.sessionId).emit('session:ended', { reason: 'manual_close' });
+  io.to(profRoom(session)).to(stuRoom(session)).emit('session:ended', { reason: 'manual_close' });
   emitSession(session);
   logEvent(session.sessionId, 'session_ended', { actor: req.auth, data: { reason: 'manual_close' } });
   await saveSessionLog(session);
@@ -186,7 +244,7 @@ setInterval(() => {
     if (session.status === 'active' && session.endsAt && Date.parse(session.endsAt) <= now) {
       session.status = 'ended';
       session.endedAt = new Date().toISOString();
-      io.to(session.sessionId).emit('session:ended', { reason: 'time_expired' });
+      io.to(profRoom(session)).to(stuRoom(session)).emit('session:ended', { reason: 'time_expired' });
       emitSession(session);
       logEvent(session.sessionId, 'session_ended', { data: { reason: 'time_expired' } });
       saveSessionLog(session);
@@ -208,7 +266,7 @@ io.on('connection', (socket) => {
     if (!auth || !['profesor', 'admin'].includes(auth.role) || auth.email !== session.professorEmail) {
       return socket.emit('session:error', { message: 'No autorizado.' });
     }
-    socket.join(sessionId);
+    socket.join(profRoom(session));
     socket.emit('session:updated', publicSession(session));
   });
 
@@ -222,17 +280,19 @@ io.on('connection', (socket) => {
     if (!startSession(session, auth)) return socket.emit('session:error', { message: 'La sesión ya fue iniciada o finalizada.' });
   });
 
-  socket.on('student:join', async ({ sessionId, name, token }) => {
-    const auth = await authFromToken(token);
-    if (!auth || auth.role !== 'estudiante') return socket.emit('session:error', { message: 'Debes iniciar sesión para unirte.' });
+  socket.on('student:join', async ({ sessionId, guestToken }) => {
+    const guest = verifyGuestToken(guestToken);
+    if (!guest || guest.sid !== sessionId) return socket.emit('session:error', { message: 'Tu pase de ingreso no es válido. Vuelve a escanear el QR para registrarte.' });
     const session = sessions.get(sessionId);
     if (!session || !['waiting', 'active'].includes(session.status)) {
       return socket.emit('session:error', { message: 'Esta sesión ya no está disponible.' });
     }
 
-    // Se identifica al alumno por su cuenta: reconectar o reabrir el enlace retoma su registro.
-    let student = [...session.students.values()].find((item) => item.uid === auth.uid);
+    // Al alumno se le identifica por su RUT: reconectar o reabrir el enlace retoma su mismo registro.
+    const identityKey = `rut:${guest.rut}`;
+    let student = [...session.students.values()].find((item) => item.identityKey === identityKey);
     if (student?.status === 'expelled') return socket.emit('session:error', { message: 'Fuiste expulsado de esta sesión y no puedes volver a entrar.' });
+    if (student && student.email !== guest.email) return socket.emit('session:error', { message: 'Ese RUT ya está registrado en esta sesión con otro correo.' });
 
     if (student) {
       const previous = io.sockets.sockets.get(student.socketId);
@@ -252,16 +312,15 @@ io.on('connection', (socket) => {
       student.leftAt = null;
     } else {
       const studentId = `student_${randomUUID().slice(0, 8)}`;
-      const cleanName = String(name ?? '').trim() || auth.name || 'Estudiante';
-      student = { studentId, uid: auth.uid, socketId: socket.id, name: cleanName, email: auth.email, joinedAt: new Date().toISOString(), leftAt: null, status: 'active' };
+      student = { studentId, identityKey, guest: true, uid: guest.uid ?? null, rut: guest.rut, socketId: socket.id, name: guest.name, email: guest.email, joinedAt: new Date().toISOString(), leftAt: null, status: 'active' };
       session.students.set(studentId, student);
-      logEvent(sessionId, 'student_joined', { student, data: { sessionStatus: session.status } });
+      logEvent(sessionId, 'student_joined', { student, data: { sessionStatus: session.status, rut: student.rut } });
     }
 
     socket.data = { sessionId, studentId: student.studentId };
-    socket.join(sessionId);
-    socket.emit('session:connected', { sessionId, studentId: student.studentId, students: [...session.students.values()] });
-    io.to(sessionId).emit('student:joined', student);
+    socket.join(stuRoom(session));
+    socket.emit('session:connected', { sessionId, studentId: student.studentId, students: studentView(session).students });
+    io.to(profRoom(session)).emit('student:joined', { ...student, socketId: undefined });
     emitSession(session);
     persistSession(session);
   });
@@ -269,8 +328,17 @@ io.on('connection', (socket) => {
   socket.on('student:event', ({ sessionId, type, message }) => {
     const session = sessions.get(sessionId);
     const student = session?.students.get(socket.data.studentId);
-    if (!session || !student || student.socketId !== socket.id) return;
-    const alert = recordAlert(session, student, type, message || 'Actividad registrada');
+    if (!session || !student || student.socketId !== socket.id || session.status !== 'active') return;
+
+    // Tope por conexión para que una ráfaga de eventos no sature el panel del profesor.
+    const now = Date.now();
+    const recent = (socket.data.eventTimes ?? []).filter((time) => now - time < 10_000);
+    if (recent.length >= 40) return;
+    recent.push(now);
+    socket.data.eventTimes = recent;
+
+    const alertType = Object.hasOwn(ALERT_SEVERITY, type) ? type : 'other';
+    const alert = recordAlert(session, student, alertType, String(message ?? '').slice(0, 200) || 'Actividad registrada');
     socket.emit('alert:recorded', alert);
     emitSession(session);
   });
@@ -284,7 +352,7 @@ io.on('connection', (socket) => {
     session.helpRequests.push(request);
     session.helpTotal += 1;
     logEvent(sessionId, 'help_requested', { student, data: { requestId: request.requestId } });
-    io.to(sessionId).emit('help:requested', request);
+    io.to(profRoom(session)).emit('help:requested', request);
     emitSession(session);
   });
 
@@ -296,7 +364,7 @@ io.on('connection', (socket) => {
     if (!hadRequest) return;
     session.helpRequests = session.helpRequests.filter((request) => request.studentId !== student.studentId);
     logEvent(sessionId, 'help_cancelled', { student, data: { reason: 'student_cancelled' } });
-    io.to(sessionId).emit('help:cancelled', { studentId: student.studentId });
+    io.to(profRoom(session)).emit('help:cancelled', { studentId: student.studentId });
     emitSession(session);
   });
 
@@ -330,7 +398,7 @@ io.on('connection', (socket) => {
       student.leftAt = new Date().toISOString();
       if (session.status === 'active') recordAlert(session, student, 'disconnected', 'Se desconectó de la sesión (cerró la pestaña, apagó el equipo o perdió la conexión)');
       logEvent(sessionId, 'student_left', { student, data: { sessionStatus: session.status } });
-      io.to(sessionId).emit('student:left', student);
+      io.to(profRoom(session)).emit('student:left', { ...student, socketId: undefined });
       changed = true;
     }
     if (session.helpRequests.some((request) => request.studentId === studentId)) {

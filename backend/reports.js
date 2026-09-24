@@ -6,7 +6,8 @@ const DATE_FORMAT = 'dd-mm-yyyy hh:mm:ss';
 const REVIEW_LABELS = { '': 'Sin revisar', clear: 'Sin observaciones', suspicious: 'Sospechoso', annulled: 'Anulado' };
 const EXAM_STATUS = { waiting: 'En espera', active: 'En curso', ended: 'Finalizado' };
 const STUDENT_STATUS = { active: 'Conectado', offline: 'Desconectado', expelled: 'Expulsado' };
-const ALERT_LABELS = { tab_switch: 'Cambio de pestaña', window_blur: 'Pérdida de foco', screen_lock: 'Pantalla oculta o bloqueada', disconnected: 'Desconexión', reconnected: 'Reconexión', second_device: 'Otro dispositivo' };
+const ALERT_LABELS = { tab_switch: 'Cambio de pestaña', window_blur: 'Pérdida de foco', screen_lock: 'Pantalla oculta o bloqueada', disconnected: 'Desconexión', reconnected: 'Reconexión', second_device: 'Otro dispositivo', copy: 'Copiar', cut: 'Cortar', paste: 'Pegar', context_menu: 'Menú contextual', print: 'Imprimir', screenshot_key: 'Captura de pantalla', shortcut: 'Atajo de teclado', returned: 'Volvió a la pantalla', orientation_change: 'Giro de pantalla', idle: 'Sin interacción', other: 'Otra actividad' };
+const SEVERITY_LABELS = { info: 'Informativa', warning: 'Advertencia', critical: 'Crítica' };
 const CATEGORY_LABELS = { session: 'Sesión', presence: 'Presencia', alert: 'Alertas', help: 'Ayuda', moderation: 'Moderación', review: 'Revisión' };
 const EVENT_LABELS = {
   session_created: 'Sesión creada', session_started: 'Examen iniciado', session_ended: 'Examen finalizado',
@@ -73,7 +74,7 @@ export async function buildExamReport({ exam, events, profiles }) {
   const summary = workbook.addWorksheet('Resumen');
   summary.columns = [{ width: 34 }, { width: 46 }];
   const facts = [
-    ['Examen', exam.examName], ['Descripción', exam.description ?? ''], ['Ramo', exam.courseName ?? ''], ['Código del ramo', exam.courseCode ?? ''], ['Carrera', exam.career ?? ''],
+    ['Examen', exam.examName], ['Descripción', exam.description ?? ''], ['Ramo', exam.courseName ?? ''], ['Tipo de ramo', exam.courseCustom ? 'Personalizado' : exam.courseName ? 'De la malla' : ''], ['Código del ramo', exam.courseCode ?? ''], ['Carrera', exam.career ?? ''],
     ['Semestre del ramo', exam.courseSemester ?? ''], ['Categoría del ramo', exam.courseCategory ?? ''], ['Áreas del profesor', (exam.specialtyNames ?? []).join(', ')],
     ['Profesor', exam.professorName], ['Correo del profesor', exam.professorEmail],
     ['Estado', EXAM_STATUS[exam.status] ?? exam.status], ['Creado', localDate(exam.createdAt)], ['Inicio', localDate(exam.startedAt)], ['Fin', localDate(exam.endedAt)],
@@ -100,27 +101,28 @@ export async function buildExamReport({ exam, events, profiles }) {
   // --- Alumnos
   const alertsOf = (studentId) => alerts.filter((alert) => alert.studentId === studentId);
   addTable(workbook, 'Alumnos', [
-    { header: 'Alumno', width: 28 }, { header: 'Correo', width: 32 }, { header: 'Carrera', width: 24 }, { header: 'Matrícula', width: 14 },
+    { header: 'Alumno', width: 28 }, { header: 'RUT', width: 14 }, { header: 'Correo', width: 32 }, { header: 'Acceso', width: 12 }, { header: 'Carrera', width: 24 }, { header: 'Matrícula', width: 14 },
     { header: 'Ingreso', width: 20, dates: true }, { header: 'Última salida', width: 20, dates: true }, { header: 'Estado', width: 14 },
     { header: 'Alertas', width: 10 }, { header: 'Desconexiones', width: 15 }, { header: 'Revisión', width: 18 }, { header: 'Nota de revisión', width: 40 }
   ], students.map((student) => {
     const profile = profiles?.[student.uid] ?? {};
     const review = reviews[student.studentId] ?? {};
     const own = alertsOf(student.studentId);
-    return [student.name, student.email, profile.career ?? '', profile.studentId ?? '', localDate(student.joinedAt), localDate(student.leftAt), STUDENT_STATUS[student.status] ?? student.status, own.length, own.filter((alert) => alert.type === 'disconnected').length, REVIEW_LABELS[review.status ?? ''], review.note ?? ''];
+    return [student.name, student.rut ?? '', student.email, student.guest ? 'Invitado' : 'Cuenta', profile.career ?? '', profile.studentId ?? '', localDate(student.joinedAt), localDate(student.leftAt), STUDENT_STATUS[student.status] ?? student.status, own.length, own.filter((alert) => alert.type === 'disconnected').length, REVIEW_LABELS[review.status ?? ''], review.note ?? ''];
   }));
 
   // --- Alertas
   addTable(workbook, 'Alertas', [
-    { header: 'Fecha y hora', width: 20, dates: true }, { header: 'Alumno', width: 28 }, { header: 'Tipo', width: 28 }, { header: 'Detalle', width: 60 }
-  ], alerts.map((alert) => [localDate(alert.timestamp), alert.studentName, ALERT_LABELS[alert.type] ?? alert.type, alert.message]));
+    { header: 'Fecha y hora', width: 20, dates: true }, { header: 'Alumno', width: 28 }, { header: 'RUT', width: 14 }, { header: 'Tipo', width: 28 }, { header: 'Gravedad', width: 14 }, { header: 'Detalle', width: 60 }
+  ], alerts.map((alert) => [localDate(alert.timestamp), alert.studentName, students.find((student) => student.studentId === alert.studentId)?.rut ?? '', ALERT_LABELS[alert.type] ?? alert.type, SEVERITY_LABELS[alert.severity] ?? '', alert.message]));
 
   // --- Historial completo
+  const rutOf = (studentId) => students.find((student) => student.studentId === studentId)?.rut ?? '';
   const emailOf = (studentId) => students.find((student) => student.studentId === studentId)?.email ?? '';
   addTable(workbook, 'Historial', [
     { header: 'Fecha y hora', width: 20, dates: true }, { header: 'Categoría', width: 14 }, { header: 'Evento', width: 34 }, { header: 'Alumno', width: 26 },
-    { header: 'Correo del alumno', width: 30 }, { header: 'Responsable', width: 30 }, { header: 'Detalle', width: 60 }
-  ], events.map((event) => [localDate(event.at), CATEGORY_LABELS[event.category] ?? event.category, EVENT_LABELS[event.type] ?? event.type, event.studentName ?? '', emailOf(event.studentId), event.actor?.email ?? '', describeEvent(event)]));
+    { header: 'RUT', width: 14 }, { header: 'Correo del alumno', width: 30 }, { header: 'Responsable', width: 30 }, { header: 'Detalle', width: 60 }
+  ], events.map((event) => [localDate(event.at), CATEGORY_LABELS[event.category] ?? event.category, EVENT_LABELS[event.type] ?? event.type, event.studentName ?? '', rutOf(event.studentId), emailOf(event.studentId), event.actor?.email ?? '', describeEvent(event)]));
 
   return workbook.xlsx.writeBuffer();
 }

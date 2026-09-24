@@ -1,4 +1,4 @@
-services:
+﻿services:
   - type: web
     name: anti-ia-copy
     runtime: node
@@ -19,6 +19,8 @@ services:
         sync: false
       - key: FIREBASE_SERVICE_ACCOUNT
         sync: false
+      - key: GUEST_TOKEN_SECRET
+        generateValue: true
 
   - type: web
     name: anti-ia-copy-1

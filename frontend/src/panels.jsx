@@ -5,13 +5,14 @@ const AVATAR_COLORS = ['#c9f469', '#f4e3a6', '#e6c3bb', '#bfd8f2', '#d9c8f0', '#
 const REVIEW_LABELS = { '': 'Sin revisar', clear: 'Sin observaciones', suspicious: 'Sospechoso', annulled: 'Anulado' };
 const EXAM_STATUS = { waiting: 'En espera', active: 'En curso', ended: 'Finalizado' };
 const STUDENT_STATUS = { active: 'Conectado', offline: 'Desconectado', expelled: 'Expulsado' };
-const ALERT_LABELS = { tab_switch: 'Cambio de pestaña', window_blur: 'Pérdida de foco', screen_lock: 'Pantalla oculta o bloqueada', disconnected: 'Desconexión', reconnected: 'Reconexión', second_device: 'Otro dispositivo' };
+const ALERT_LABELS = { tab_switch: 'Cambio de pestaña', window_blur: 'Pérdida de foco', screen_lock: 'Pantalla oculta o bloqueada', disconnected: 'Desconexión', reconnected: 'Reconexión', second_device: 'Otro dispositivo', copy: 'Copiar', cut: 'Cortar', paste: 'Pegar', context_menu: 'Menú contextual', print: 'Imprimir', screenshot_key: 'Captura de pantalla', shortcut: 'Atajo de teclado', returned: 'Volvió a la pantalla', orientation_change: 'Giro de pantalla', idle: 'Sin interacción', other: 'Otra actividad' };
 const EVENT_LABELS = {
   session_created: 'Sesión creada', session_started: 'Examen iniciado', session_ended: 'Examen finalizado',
   student_joined: 'Alumno ingresó', student_left: 'Alumno salió', student_reconnected: 'Alumno volvió', student_replaced: 'Sesión abierta en otro dispositivo',
   alert: 'Alerta', help_requested: 'Pidió ayuda', help_cancelled: 'Canceló su pedido de ayuda', help_resolved: 'Ayuda atendida',
   student_expelled: 'Alumno expulsado', review_set: 'Revisión del profesor', notes_updated: 'Notas del examen actualizadas', record_archived: 'Registro archivado'
 };
+const SEVERITY_LABELS = { info: 'Informativa', warning: 'Advertencia', critical: 'Crítica' };
 const CATEGORY_LABELS = { session: 'Sesión', presence: 'Presencia', alert: 'Alertas', help: 'Ayuda', moderation: 'Moderación', review: 'Revisión' };
 const NAV = {
   profesor: [['/professor', 'Nueva sesión'], ['/professor/exams', 'Mis exámenes'], ['/professor/profile', 'Mi perfil']],
@@ -19,9 +20,9 @@ const NAV = {
 };
 
 // Ramos que un profesor puede usar: los de sus áreas (el administrador ve todas).
-export function availableAreas(catalog, profile, isAdmin) {
+export function availableAreas(catalog, profile, showAll) {
   const chosen = new Set(profile?.specialtyIds ?? []);
-  return (catalog?.specialties ?? []).filter((area) => isAdmin || chosen.has(area.id)).map((area) => ({
+  return (catalog?.specialties ?? []).filter((area) => showAll || chosen.has(area.id)).map((area) => ({
     area,
     courses: (catalog.courses ?? []).filter((course) => course.specialtyIds?.includes(area.id))
   })).filter((group) => group.courses.length);
@@ -29,16 +30,22 @@ export function availableAreas(catalog, profile, isAdmin) {
 
 const courseLabel = (course) => `${course.name}${course.career ? ` · ${course.career}` : ''}${course.semester ? ` · Sem ${course.semester}` : ''}`;
 
+export const CUSTOM_COURSE = '__custom__';
+
 export function CourseFields({ form, setForm, profile, catalog, isAdmin }) {
   const hasCatalog = (catalog?.courses ?? []).length > 0;
-  const groups = availableAreas(catalog, profile, isAdmin);
+  const hasAreas = (profile?.specialtyIds ?? []).length > 0;
+  // Todos ven solo los ramos de sus áreas. Un administrador sin áreas elegidas puede ver toda la malla.
+  const groups = availableAreas(catalog, profile, isAdmin && !hasAreas);
   return <>
     {profile?.name && <p className="professor-line">Profesor/a: <strong>{profile.name}</strong></p>}
-    {hasCatalog && !isAdmin && !(profile?.specialtyIds ?? []).length && <p className="notice-box">Antes de crear una sesión, elige tus áreas de profesorado en <Link to="/professor/profile">tu perfil</Link>. Así solo verás los ramos que te corresponden.</p>}
-    {hasCatalog && (isAdmin || (profile?.specialtyIds ?? []).length > 0) && <label>Ramo<select required={!isAdmin} value={form.courseId} onChange={(e) => setForm({ ...form, courseId: e.target.value })}>
-      <option value="">{isAdmin ? 'Sin ramo (opcional)' : 'Elige el ramo…'}</option>
+    {hasCatalog && !hasAreas && !isAdmin && <p className="notice-box">Elige tus áreas de profesorado en <Link to="/professor/profile">tu perfil</Link> para ver los ramos que te corresponden. Mientras tanto puedes usar <strong>Personalizado</strong>.</p>}
+    {hasCatalog && <label>Ramo<select required value={form.courseId} onChange={(e) => setForm({ ...form, courseId: e.target.value })}>
+      <option value="">Elige el ramo…</option>
       {groups.map(({ area, courses }) => <optgroup key={area.id} label={area.name}>{courses.map((course) => <option key={`${area.id}-${course.id}`} value={course.id}>{courseLabel(course)}</option>)}</optgroup>)}
+      <optgroup label="Otro"><option value={CUSTOM_COURSE}>Personalizado (ramo fuera de mis áreas)</option></optgroup>
     </select></label>}
+    {hasCatalog && form.courseId === CUSTOM_COURSE && <label>Nombre del ramo<input required maxLength={160} value={form.customCourseName} onChange={(e) => setForm({ ...form, customCourseName: e.target.value })} placeholder="Ej. Álgebra Lineal (prueba de un colega)" /></label>}
   </>;
 }
 
@@ -136,7 +143,7 @@ function HistoryPanel({ api, detail }) {
   useEffect(() => { setError(''); api(`/api/professor/exams/${detail.sessionId}/events`).then(setEvents).catch((caught) => setError(caught.message)); }, [detail.sessionId]);
   const visible = (events ?? []).filter((event) => (category === 'all' || event.category === category) && (studentId === 'all' || event.studentId === studentId));
   const emailOf = (id) => (detail.students ?? []).find((student) => student.studentId === id)?.email ?? '';
-  const exportHistory = () => downloadCsv(`${detail.examName}-historial.csv`, [['Fecha y hora', 'Categoría', 'Evento', 'Alumno', 'Correo del alumno', 'Responsable', 'Detalle'], ...(events ?? []).map((event) => [formatDateTime(event.at), CATEGORY_LABELS[event.category] ?? event.category, EVENT_LABELS[event.type] ?? event.type, event.studentName ?? '', emailOf(event.studentId), event.actor?.email ?? '', describeEvent(event)])]);
+  const exportHistory = () => downloadCsv(`${detail.examName}-historial.csv`, [['Fecha y hora', 'Categoría', 'Evento', 'Alumno', 'RUT', 'Correo del alumno', 'Responsable', 'Detalle'], ...(events ?? []).map((event) => [formatDateTime(event.at), CATEGORY_LABELS[event.category] ?? event.category, EVENT_LABELS[event.type] ?? event.type, event.studentName ?? '', (detail.students ?? []).find((student) => student.studentId === event.studentId)?.rut ?? '', emailOf(event.studentId), event.actor?.email ?? '', describeEvent(event)])]);
   return <div className="history-panel">
     <div className="admin-toolbar">
       <div className="admin-filters">{[['all', 'Todo'], ...Object.entries(CATEGORY_LABELS)].map(([value, label]) => <button key={value} type="button" className={category === value ? 'is-active' : ''} onClick={() => setCategory(value)}>{label}</button>)}</div>
@@ -172,8 +179,8 @@ function ExamDetail({ api, download, detail, setDetail, onBack, onDeleted }) {
     if (window.confirm(`¿Archivar "${detail.examName}"? Se oculta de tu lista, pero el registro y su historial se conservan.`)) guard(async () => { await api(`/api/professor/exams/${detail.sessionId}`, { method: 'DELETE' }); onDeleted(detail.sessionId); });
   };
   const exportExcel = () => guard(() => download(`/api/professor/exams/${detail.sessionId}/report.xlsx`, `informe-${detail.examName}.xlsx`), 'Informe descargado.');
-  const exportStudents = () => downloadCsv(`${detail.examName}-alumnos.csv`, [['Alumno', 'Correo', 'Ingreso', 'Estado', 'Alertas', 'Revisión', 'Nota'], ...(detail.students ?? []).map((student) => [student.name, student.email, formatDate(student.joinedAt), STUDENT_STATUS[student.status] ?? student.status, alertsOf(student.studentId).length, REVIEW_LABELS[reviews[student.studentId]?.status ?? ''], reviews[student.studentId]?.note ?? ''])]);
-  const exportAlerts = () => downloadCsv(`${detail.examName}-alertas.csv`, [['Alumno', 'Hora', 'Tipo', 'Detalle'], ...(detail.alerts ?? []).map((alert) => [alert.studentName, formatDate(alert.timestamp), alertLabel(alert), alert.message])]);
+  const exportStudents = () => downloadCsv(`${detail.examName}-alumnos.csv`, [['Alumno', 'RUT', 'Correo', 'Ingreso', 'Estado', 'Alertas', 'Revisión', 'Nota'], ...(detail.students ?? []).map((student) => [student.name, student.rut ?? '', student.email, formatDate(student.joinedAt), STUDENT_STATUS[student.status] ?? student.status, alertsOf(student.studentId).length, REVIEW_LABELS[reviews[student.studentId]?.status ?? ''], reviews[student.studentId]?.note ?? ''])]);
+  const exportAlerts = () => downloadCsv(`${detail.examName}-alertas.csv`, [['Alumno', 'Hora', 'Tipo', 'Gravedad', 'Detalle'], ...(detail.alerts ?? []).map((alert) => [alert.studentName, formatDate(alert.timestamp), alertLabel(alert), SEVERITY_LABELS[alert.severity] ?? '', alert.message])]);
 
   return <div className="exam-detail">
     <button className="row-action back-link" type="button" onClick={onBack}>← Volver a mis exámenes</button>
@@ -188,14 +195,14 @@ function ExamDetail({ api, download, detail, setDetail, onBack, onDeleted }) {
       <thead><tr><th>Alumno</th><th>Ingreso</th><th>Estado</th><th>Alertas</th><th>Revisión</th><th>Nota</th></tr></thead>
       <tbody>{(detail.students ?? []).map((student) => { const review = reviews[student.studentId] ?? {}; const alerts = alertsOf(student.studentId); return <Fragment key={student.studentId}>
         <tr>
-          <td><strong>{student.name}</strong><span>{student.email}</span></td>
+          <td><strong>{student.name}</strong><span>{student.rut ? `${student.rut} · ` : ''}{student.email}</span></td>
           <td>{formatTime(student.joinedAt)}</td>
           <td>{STUDENT_STATUS[student.status] ?? student.status}</td>
           <td>{alerts.length ? <button type="button" className="row-action alert-toggle" onClick={() => setOpen({ ...open, [student.studentId]: !open[student.studentId] })}>{alerts.length} {open[student.studentId] ? '▴' : '▾'}</button> : 0}</td>
           <td><select value={review.status ?? ''} onChange={(e) => saveReview(student.studentId, { status: e.target.value })}>{Object.entries(REVIEW_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></td>
           <td><input className="note-input" defaultValue={review.note ?? ''} maxLength={1000} placeholder="Agregar nota" onBlur={(e) => e.target.value !== (review.note ?? '') && saveReview(student.studentId, { note: e.target.value })} /></td>
         </tr>
-        {open[student.studentId] && <tr className="alert-rows"><td colSpan={6}><ul>{alerts.map((alert) => <li key={alert.alertId}><span>{formatTime(alert.timestamp)}</span> <strong>{alertLabel(alert)}</strong> · {alert.message}</li>)}</ul></td></tr>}
+        {open[student.studentId] && <tr className="alert-rows"><td colSpan={6}><ul>{alerts.map((alert) => <li key={alert.alertId} className={`sev-${alert.severity ?? 'info'}`}><span>{formatTime(alert.timestamp)}</span> <strong>{alertLabel(alert)}</strong> · {alert.message}</li>)}</ul></td></tr>}
       </Fragment>; })}</tbody>
     </table>{!detail.students?.length && <p className="admin-empty">Nadie se conectó a este examen.</p>}</div>}
     <div className="notes-box"><label>Notas del examen<textarea rows={4} maxLength={4000} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Observaciones generales, incidentes, decisiones…" /></label><button className="button button-dark" type="button" onClick={saveNotes}>Guardar notas <span>→</span></button></div>

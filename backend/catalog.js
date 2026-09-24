@@ -24,12 +24,21 @@ export async function loadCatalog({ includeInactive = false } = {}) {
  * Valida el ramo elegido para una sesión. Mientras el catálogo esté vacío no se exige nada;
  * después, un profesor solo puede usar ramos de las áreas que eligió en su perfil.
  */
-export async function resolveCourse({ courseId, professorSpecialtyIds = [], isAdmin }) {
+export const CUSTOM_COURSE = '__custom__';
+
+export async function resolveCourse({ courseId, customCourseName, professorSpecialtyIds = [], isAdmin }) {
+  // "Personalizado": cualquier profesor puede usarlo, por ejemplo al tomar la prueba de un colega de otra área.
+  if (courseId === CUSTOM_COURSE) {
+    const name = String(customCourseName ?? '').trim().slice(0, 160);
+    if (!name) return { error: 'Escribe el nombre del ramo personalizado.' };
+    return { course: { id: null, name, custom: true }, specialties: [] };
+  }
+
   const catalog = await loadCatalog();
   if (!catalog.courses.length) return { course: null, specialties: [] };
 
-  if (!isAdmin && !professorSpecialtyIds.length) return { error: 'Completa tu perfil: elige tus áreas de profesorado para poder crear sesiones.' };
-  if (!courseId) return isAdmin ? { course: null, specialties: [] } : { error: 'Elige el ramo de la sesión.' };
+  if (!courseId) return { error: 'Elige el ramo de la sesión o usa "Personalizado".' };
+  if (!isAdmin && !professorSpecialtyIds.length) return { error: 'Completa tu perfil: elige tus áreas de profesorado para ver tus ramos, o usa "Personalizado".' };
 
   const course = catalog.courses.find((item) => item.id === courseId);
   if (!course) return { error: 'El ramo elegido no existe o está desactivado.' };

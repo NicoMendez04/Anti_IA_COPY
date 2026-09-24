@@ -168,6 +168,24 @@ function LoginPage() {
   return <Layout><LoginForm onAuthenticated={(next) => { login(next); navigate(homeFor(next), { replace: true }); }} /></Layout>;
 }
 
+const guestStorageKey = (sessionId) => `vigia_guest_${sessionId}`;
+const readGuest = (sessionId) => { try { return JSON.parse(localStorage.getItem(guestStorageKey(sessionId))); } catch { return null; } };
+
+function formatRut(value) {
+  const clean = value.replace(/[^0-9kK]/g, '').toUpperCase().slice(0, 9);
+  if (clean.length < 2) return clean;
+  return `${clean.slice(0, -1).replace(/\B(?=(\d{3})+(?!\d))/g, '.')}-${clean.slice(-1)}`;
+}
+
+function isValidRut(value) {
+  const clean = value.replace(/[.\s-]/g, '').toUpperCase();
+  if (!/^\d{7,8}[\dK]$/.test(clean)) return false;
+  let sum = 0; let factor = 2;
+  for (let index = clean.length - 2; index >= 0; index -= 1) { sum += Number(clean[index]) * factor; factor = factor === 7 ? 2 : factor + 1; }
+  const remainder = 11 - (sum % 11);
+  return clean.slice(-1) === (remainder === 11 ? '0' : remainder === 10 ? 'K' : String(remainder));
+}
+
 async function request(token, path, options = {}) {
   const response = await fetch(`${API_URL}${path}`, { ...options, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` } });
   const data = await response.json().catch(() => ({}));
@@ -225,7 +243,7 @@ function Landing() {
 
 function ProfessorDashboard() {
   const { auth, login, logout } = useAuth('profesor');
-  const [form, setForm] = useState({ examName: '', duration: 60, courseId: '', description: '' });
+  const [form, setForm] = useState({ examName: '', duration: 60, courseId: '', customCourseName: '', description: '' });
   const [profile, setProfile] = useState(null);
   const [catalog, setCatalog] = useState(null);
   useEffect(() => { if (!auth) return; request(auth.token, '/api/me/profile').then(setProfile).catch(() => {}); request(auth.token, '/api/catalog').then(setCatalog).catch(() => {}); }, [Boolean(auth)]);
@@ -280,7 +298,7 @@ function ProfessorDashboard() {
   async function createSession(event) {
     event.preventDefault(); setError('');
     try {
-      const response = await fetch(`${API_URL}/api/sessions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${auth.token}` }, body: JSON.stringify({ examName: form.examName, duration: form.duration, courseId: form.courseId, description: form.description }) });
+      const response = await fetch(`${API_URL}/api/sessions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${auth.token}` }, body: JSON.stringify({ examName: form.examName, duration: form.duration, courseId: form.courseId, customCourseName: form.customCourseName, description: form.description }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.message);
       setSession(data);
@@ -301,14 +319,14 @@ function ProfessorDashboard() {
 
   if (!auth) return <Layout><LoginForm role="profesor" onAuthenticated={login} /></Layout>;
 
-  if (!session) return <Layout><AreaNav role="profesor" admin={auth.role === 'admin'} /><section className="setup-page"><div className="page-kicker">PANEL DEL PROFESOR <span>01</span></div><div className="setup-grid"><div><h1>Abre una nueva<br /><em>sesión.</em></h1><p className="lede">Configura el espacio de evaluación y comparte el acceso con tu clase.</p><div className="landing-note"><span className="note-line" /> <span>{auth.email} · <button className="row-action" type="button" onClick={logout}>Cerrar sesión</button></span></div></div><form className="session-form" onSubmit={createSession}><CourseFields form={form} setForm={setForm} profile={profile} catalog={catalog} isAdmin={auth.role === 'admin'} /><label>Nombre del examen<input required value={form.examName} onChange={(e) => setForm({ ...form, examName: e.target.value })} placeholder="Ej. Álgebra · Unidad 2" /></label><label>Descripción <span className="label-help">OPCIONAL</span><textarea rows={3} maxLength={500} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Ej. Unidad 2: derivadas e integrales. Se permite calculadora." /></label><label>Duración <span className="label-help">MINUTOS</span><input type="number" min="5" max="240" value={form.duration} onChange={(e) => setForm({ ...form, duration: e.target.value })} /></label>{error && <p className="error-message">{error}</p>}<button className="button button-dark" type="submit" disabled={(catalog?.courses ?? []).length > 0 && auth.role !== 'admin' && !(profile?.specialtyIds ?? []).length}>Generar sesión <span>→</span></button></form></div></section></Layout>;
+  if (!session) return <Layout><AreaNav role="profesor" admin={auth.role === 'admin'} /><section className="setup-page"><div className="page-kicker">PANEL DEL PROFESOR <span>01</span></div><div className="setup-grid"><div><h1>Abre una nueva<br /><em>sesión.</em></h1><p className="lede">Configura el espacio de evaluación y comparte el acceso con tu clase.</p><div className="landing-note"><span className="note-line" /> <span>{auth.email} · <button className="row-action" type="button" onClick={logout}>Cerrar sesión</button></span></div></div><form className="session-form" onSubmit={createSession}><CourseFields form={form} setForm={setForm} profile={profile} catalog={catalog} isAdmin={auth.role === 'admin'} /><label>Nombre del examen<input required value={form.examName} onChange={(e) => setForm({ ...form, examName: e.target.value })} placeholder="Ej. Álgebra · Unidad 2" /></label><label>Descripción <span className="label-help">OPCIONAL</span><textarea rows={3} maxLength={500} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Ej. Unidad 2: derivadas e integrales. Se permite calculadora." /></label><label>Duración <span className="label-help">MINUTOS</span><input type="number" min="5" max="240" value={form.duration} onChange={(e) => setForm({ ...form, duration: e.target.value })} /></label>{error && <p className="error-message">{error}</p>}<button className="button button-dark" type="submit">Generar sesión <span>→</span></button></form></div></section></Layout>;
 
   const activeStudents = session.students?.filter((student) => student.status === 'active') || [];
   if (session.status === 'ended') return <SessionSummary session={session} />;
   const pendingHelp = session.helpRequests || [];
   const remainingSeconds = session.endsAt ? Math.max(0, Math.ceil((Date.parse(session.endsAt) - now.getTime()) / 1000)) : 0;
   const remainingLabel = `${String(Math.floor(remainingSeconds / 60)).padStart(2, '0')}:${String(remainingSeconds % 60).padStart(2, '0')}`;
-  return <Layout><section className="dashboard"><div className="dashboard-head"><div><div className="page-kicker">SALA EN DIRECTO <span>/{session.sessionId.slice(-4).toUpperCase()}</span></div><h1>{session.examName}</h1><p>Creada por {session.professorName} · {session.status === 'active' ? `Tiempo restante ${remainingLabel}` : session.status === 'waiting' ? 'Esperando inicio' : 'Sesión finalizada'}</p></div><div className="head-actions">{pendingHelp.length > 0 && <span className="help-badge">✋ {pendingHelp.length} en espera</span>}<span className={`status-chip ${session.status}`}>{session.status === 'active' ? '● En curso' : session.status === 'waiting' ? '◌ Lista para iniciar' : '○ Finalizada'}</span>{session.status === 'waiting' && <button className="button button-dark" onClick={startSession}>Iniciar examen <span>→</span></button>}{session.status === 'active' && <button className="button button-danger" onClick={endSession}>Finalizar sesión</button>}</div></div><section className="help-panel"><div className="panel-header"><div><div className="panel-label">SOLICITUDES DE AYUDA</div><h2>{pendingHelp.length ? `${pendingHelp.length} en espera` : 'Nadie ha llamado'}</h2></div><button className="sound-toggle" type="button" onClick={enableHelpSound}>{helpSoundEnabled ? 'Sonido activado' : 'Activar aviso sonoro'}</button></div>{pendingHelp.length ? <div className="help-list">{pendingHelp.map((request) => <div className="help-row" key={request.requestId}><span className="help-dot" /><span className="help-name">{request.studentName}<small>Esperando {formatElapsed(request.requestedAt)}</small></span><button className="button button-dark" type="button" onClick={() => resolveHelp(request.requestId)}>Atender</button></div>)}</div> : <div className="empty-state">Sin solicitudes activas.<br /><span>Cuando un estudiante llame, aparecerá aquí.</span></div>}</section><div className="dashboard-grid"><section className="qr-panel"><div className="panel-label">ACCESO DE ESTUDIANTES</div><div className="qr-frame"><img src={session.qrCode} alt="Código QR de acceso" /></div><strong>{session.status === 'waiting' ? 'Escanea y espera el inicio' : 'Sesión iniciada'}</strong><p>También puedes compartir este enlace:</p><button className="copy-link" onClick={() => navigator.clipboard?.writeText(session.qrData)}>{session.qrData.replace('http://', '').replace('https://', '')} <span>Copiar</span></button></section><section className="roster-panel"><div className="panel-header"><div><div className="panel-label">PRESENTES</div><h2>{activeStudents.length.toString().padStart(2, '0')} estudiantes</h2></div><span className="live-dot">{session.status === 'waiting' ? 'ESPERANDO' : 'EN VIVO'}</span></div>{activeStudents.length === 0 ? <div className="empty-state">Esperando a tu primera conexión<br /><span>Comparte el código de acceso con la clase.</span></div> : <div className="student-list">{activeStudents.map((student) => <div className="student-row" key={student.studentId}><span className="avatar">{student.name.charAt(0).toUpperCase()}</span><span className="student-name">{student.name}<small>{student.email ? `${student.email} · ` : ''}Conectado {new Date(student.joinedAt).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}</small></span><button className="row-action" onClick={() => expel(student.studentId)} title="Expulsar estudiante">Expulsar</button></div>)}</div>}</section></div><section className="alerts-panel"><div className="panel-header"><div><div className="panel-label">REGISTRO DE ACTIVIDAD</div><h2>Alertas recientes</h2></div><span className="alert-count">{session.alerts?.length || 0}</span></div>{session.alerts?.length ? <div className="alert-list">{session.alerts.slice(0, 6).map((alert) => <div className="alert-row" key={alert.alertId}><span className={`alert-icon${alert.type === 'screen_lock' ? ' alert-icon-lock' : ''}`}>{alert.type === 'screen_lock' ? '●' : '!'}</span><span><strong>{alert.studentName}</strong> · {alert.message}<small>{new Date(alert.timestamp).toLocaleTimeString('es-ES')}</small></span></div>)}</div> : <div className="empty-alerts">No hay actividad sospechosa registrada.</div>}</section></section></Layout>;
+  return <Layout><section className="dashboard"><div className="dashboard-head"><div><div className="page-kicker">SALA EN DIRECTO <span>/{session.sessionId.slice(-4).toUpperCase()}</span></div><h1>{session.examName}</h1><p>Creada por {session.professorName} · {session.status === 'active' ? `Tiempo restante ${remainingLabel}` : session.status === 'waiting' ? 'Esperando inicio' : 'Sesión finalizada'}</p></div><div className="head-actions">{pendingHelp.length > 0 && <span className="help-badge">✋ {pendingHelp.length} en espera</span>}<span className={`status-chip ${session.status}`}>{session.status === 'active' ? '● En curso' : session.status === 'waiting' ? '◌ Lista para iniciar' : '○ Finalizada'}</span>{session.status === 'waiting' && <button className="button button-dark" onClick={startSession}>Iniciar examen <span>→</span></button>}{session.status === 'active' && <button className="button button-danger" onClick={endSession}>Finalizar sesión</button>}</div></div><section className="help-panel"><div className="panel-header"><div><div className="panel-label">SOLICITUDES DE AYUDA</div><h2>{pendingHelp.length ? `${pendingHelp.length} en espera` : 'Nadie ha llamado'}</h2></div><button className="sound-toggle" type="button" onClick={enableHelpSound}>{helpSoundEnabled ? 'Sonido activado' : 'Activar aviso sonoro'}</button></div>{pendingHelp.length ? <div className="help-list">{pendingHelp.map((request) => <div className="help-row" key={request.requestId}><span className="help-dot" /><span className="help-name">{request.studentName}<small>Esperando {formatElapsed(request.requestedAt)}</small></span><button className="button button-dark" type="button" onClick={() => resolveHelp(request.requestId)}>Atender</button></div>)}</div> : <div className="empty-state">Sin solicitudes activas.<br /><span>Cuando un estudiante llame, aparecerá aquí.</span></div>}</section><div className="dashboard-grid"><section className="qr-panel"><div className="panel-label">ACCESO DE ESTUDIANTES</div><div className="qr-frame"><img src={session.qrCode} alt="Código QR de acceso" /></div><strong>{session.status === 'waiting' ? 'Escanea y espera el inicio' : 'Sesión iniciada'}</strong><p>También puedes compartir este enlace:</p><button className="copy-link" onClick={() => navigator.clipboard?.writeText(session.qrData)}>{session.qrData.replace('http://', '').replace('https://', '')} <span>Copiar</span></button></section><section className="roster-panel"><div className="panel-header"><div><div className="panel-label">PRESENTES</div><h2>{activeStudents.length.toString().padStart(2, '0')} estudiantes</h2></div><span className="live-dot">{session.status === 'waiting' ? 'ESPERANDO' : 'EN VIVO'}</span></div>{activeStudents.length === 0 ? <div className="empty-state">Esperando a tu primera conexión<br /><span>Comparte el código de acceso con la clase.</span></div> : <div className="student-list">{activeStudents.map((student) => <div className="student-row" key={student.studentId}><span className="avatar">{student.name.charAt(0).toUpperCase()}</span><span className="student-name">{student.name}<small>{student.rut ? `${student.rut} · ` : ''}{student.email ? `${student.email} · ` : ''}Conectado {new Date(student.joinedAt).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}</small></span><button className="row-action" onClick={() => expel(student.studentId)} title="Expulsar estudiante">Expulsar</button></div>)}</div>}</section></div><section className="alerts-panel"><div className="panel-header"><div><div className="panel-label">REGISTRO DE ACTIVIDAD</div><h2>Alertas recientes</h2></div><span className="alert-count">{session.alerts?.length || 0}</span></div>{session.alerts?.length ? <div className="alert-list">{session.alerts.slice(0, 10).map((alert) => <div className="alert-row" key={alert.alertId}><span className={`alert-icon alert-sev-${alert.severity ?? 'info'}${alert.type === 'screen_lock' ? ' alert-icon-lock' : ''}`}>{alert.type === 'screen_lock' ? '●' : '!'}</span><span><strong>{alert.studentName}</strong> · {alert.message}<small>{new Date(alert.timestamp).toLocaleTimeString('es-ES')}</small></span></div>)}</div> : <div className="empty-alerts">No hay actividad sospechosa registrada.</div>}</section></section></Layout>;
 }
 
 function SessionSummary({ session }) {
@@ -318,30 +336,125 @@ function SessionSummary({ session }) {
 }
 
 function StudentEntry() {
-  const { sessionId } = useParams(); const navigate = useNavigate(); const { auth, login } = useAuth('estudiante'); const [name, setName] = useState(''); const [error, setError] = useState('');
-  useEffect(() => { if (!sessionId) return; fetch(`${API_URL}/api/sessions/${sessionId}`).then((r) => { if (!r.ok) throw new Error(); return r.json(); }).catch(() => setError('El enlace no corresponde a una sesión activa.')); }, [sessionId]);
-  function join(event) { event.preventDefault(); if (!name.trim()) return; navigate(`/student/${sessionId}/live`, { state: { name: name.trim() } }); }
+  const { sessionId } = useParams();
+  const navigate = useNavigate();
+  const { session: account } = useAuth();
+  const [info, setInfo] = useState(null);
+  const [form, setForm] = useState({ name: '', email: '', rut: '' });
+  const [consent, setConsent] = useState(false);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [saved, setSaved] = useState(() => readGuest(sessionId));
+
+  useEffect(() => {
+    if (!sessionId) return;
+    fetch(`${API_URL}/api/sessions/${sessionId}`).then((r) => { if (!r.ok) throw new Error(); return r.json(); }).then(setInfo).catch(() => setError('El enlace no corresponde a una sesión activa.'));
+  }, [sessionId]);
+  // Quien ya tiene cuenta de estudiante entra con sus datos precargados y el examen queda en su historial.
+  useEffect(() => { if (account?.role === 'estudiante') setForm((current) => ({ ...current, name: current.name || account.name || '', email: current.email || account.email || '' })); }, [account?.email]);
+
+  async function join(event) {
+    event.preventDefault(); setError('');
+    if (!isValidRut(form.rut)) return setError('El RUT no es válido. Revisa el número y el dígito verificador.');
+    setLoading(true);
+    try {
+      const headers = { 'Content-Type': 'application/json', ...(account?.role === 'estudiante' ? { Authorization: `Bearer ${account.token}` } : {}) };
+      const response = await fetch(`${API_URL}/api/sessions/${sessionId}/guest`, { method: 'POST', headers, body: JSON.stringify(form) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.message);
+      localStorage.setItem(guestStorageKey(sessionId), JSON.stringify({ token: data.token, student: data.student }));
+      navigate(`/student/${sessionId}/live`);
+    } catch (caught) { setError(caught.message || 'No se pudo registrar tu ingreso.'); } finally { setLoading(false); }
+  }
+  function forget() { localStorage.removeItem(guestStorageKey(sessionId)); setSaved(null); }
+
   if (!sessionId) return <StudentScanner />;
-  if (!auth) return <Layout><LoginForm role="estudiante" onAuthenticated={login} /></Layout>;
-  return <Layout><AreaNav role="estudiante" /><section className="student-entry"><div className="student-badge">ACCESO A SESIÓN</div><h1>Preséntate<br /><em>para comenzar.</em></h1><p className="lede">Escribe tu nombre completo. Tu actividad quedará visible para el profesor durante la sesión.</p><form className="student-form" onSubmit={join}><label>Nombre completo<input autoFocus required value={name} onChange={(e) => setName(e.target.value)} placeholder="Ej. Carlos López" /></label>{error && <p className="error-message">{error}</p>}<button className="button button-dark" type="submit">Entrar a la sesión <span>→</span></button></form></section></Layout>;
+  const ended = info && info.status === 'ended';
+  if (saved && !ended && !error) return <Layout><section className="student-entry"><div className="student-badge">ACCESO A SESIÓN</div><h1>Ya estás<br /><em>registrado.</em></h1><p className="lede">Entraste como <strong>{saved.student.name}</strong> ({saved.student.rut}). Tu pase sigue vigente: puedes volver al examen aunque hayas cerrado la página.</p><div className="student-form"><button className="button button-dark" type="button" onClick={() => navigate(`/student/${sessionId}/live`)}>Volver al examen <span>→</span></button><button className="row-action switch-mode" type="button" onClick={forget}>No soy yo · registrar otros datos</button></div></section></Layout>;
+  return <Layout><section className="student-entry"><div className="student-badge">ACCESO A SESIÓN</div>
+    <h1>Ingresa a<br /><em>la evaluación.</em></h1>
+    {info && <p className="lede"><strong>{info.examName}</strong>{info.courseName ? ` · ${info.courseName}` : ''}{info.professorName ? ` · Prof. ${info.professorName}` : ''}{info.description ? <><br /><span className="entry-desc">{info.description}</span></> : null}</p>}
+    {ended && <p className="error-message">Esta sesión ya finalizó.</p>}
+    <form className="student-form" onSubmit={join}>
+      <label>Nombre completo<input autoFocus required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Ej. Carlos López Pérez" autoComplete="name" /></label>
+      <label>Correo<input required type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="nombre@correo.cl" autoComplete="email" /></label>
+      <label>RUT<input required inputMode="text" value={form.rut} onChange={(e) => setForm({ ...form, rut: formatRut(e.target.value) })} placeholder="12.345.678-5" maxLength={12} /></label>
+      <label className="consent"><input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} /><span>Entiendo que mi actividad durante el examen (cambios de pantalla, desconexiones, copiar y pegar, entre otras) queda registrada, y que el profesor validará estos datos.</span></label>
+      {error && <p className="error-message">{error}</p>}
+      <button className="button button-dark" type="submit" disabled={loading || !consent || ended}>{loading ? 'Registrando…' : 'Entrar al examen'} <span>→</span></button>
+    </form></section></Layout>;
 }
 
 function StudentScanner() { const navigate = useNavigate(); useEffect(() => { const scanner = new Html5QrcodeScanner('reader', { fps: 10, qrbox: { width: 220, height: 220 } }, false); scanner.render((decoded) => { scanner.clear(); try { navigate(new URL(decoded).pathname); } catch { navigate(decoded); } }, () => {}); return () => scanner.clear().catch(() => {}); }, [navigate]); return <Layout><AreaNav role="estudiante" /><section className="scanner-page"><div className="page-kicker">ENTRADA DE ESTUDIANTE <span>01</span></div><h1>Escanea el<br /><em>código de acceso.</em></h1><p className="lede">Apunta la cámara al QR que muestra tu profesor.</p><div id="reader" className="scanner-box" /></section></Layout>; }
 
-function StudentLive() { const { sessionId } = useParams(); const navigate = useNavigate(); const location = useLocation(); const { auth } = useAuth('estudiante'); const [session, setSession] = useState(null); const [alertCount, setAlertCount] = useState(0); const [now, setNow] = useState(Date.now()); const [soundEnabled, setSoundEnabled] = useState(false); const [helpStatus, setHelpStatus] = useState('idle'); const audioContext = useRef(null); const tokenRef = useRef(auth?.token); tokenRef.current = auth?.token; const [notice, setNotice] = useState(null); const name = location.state?.name || 'Estudiante';
-  useEffect(() => { if (!auth) navigate(`/student/${sessionId}`); }, [auth, sessionId]);
-  useEffect(() => { if (!auth) return; fetch(`${API_URL}/api/sessions/${sessionId}`).then((r) => r.json()).then(setSession); const onConnected = (data) => setSession((current) => ({ ...current, students: data.students })); const onUpdate = (data) => setSession(data); const onExpelled = () => navigate('/student'); const onEnded = () => setSession((current) => ({ ...current, status: 'ended' })); const onAlert = (alert) => { setAlertCount((value) => value + 1); playAlertSound(); showAlertNotification(alert); }; const onHelpResolved = () => setHelpStatus('idle'); socket.on('session:connected', onConnected); socket.on('session:updated', onUpdate); socket.on('student:expelled', onExpelled); socket.on('session:ended', onEnded); socket.on('alert:recorded', onAlert); socket.on('help:resolved', onHelpResolved); const join = () => socket.emit('student:join', { sessionId, name, token: tokenRef.current }); const onReplaced = () => { setNotice({ title: 'Sesión abierta en otro dispositivo', text: 'Esta sesión se abrió desde otro dispositivo o pestaña, por lo que esta quedó cerrada. El profesor fue avisado.' }); socket.disconnect(); }; const onSessionError = ({ message }) => setNotice({ title: 'No se pudo entrar a la sesión', text: message }); socket.on('connect', join); socket.on('student:replaced', onReplaced); socket.on('session:error', onSessionError); socket.connect(); if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); return () => { socket.off('session:connected', onConnected); socket.off('session:updated', onUpdate); socket.off('student:expelled', onExpelled); socket.off('session:ended', onEnded); socket.off('alert:recorded', onAlert); socket.off('help:resolved', onHelpResolved); socket.off('connect', join); socket.off('student:replaced', onReplaced); socket.off('session:error', onSessionError); socket.disconnect(); }; }, [sessionId, Boolean(auth)]);
+function StudentLive() { const { sessionId } = useParams(); const navigate = useNavigate(); const location = useLocation(); const guest = readGuest(sessionId); const [session, setSession] = useState(null); const [alertCount, setAlertCount] = useState(0); const [now, setNow] = useState(Date.now()); const [soundEnabled, setSoundEnabled] = useState(false); const [helpStatus, setHelpStatus] = useState('idle'); const audioContext = useRef(null); const [notice, setNotice] = useState(null); const name = guest?.student?.name || 'Estudiante';
+  useEffect(() => { if (!guest) navigate(`/student/${sessionId}`, { replace: true }); }, [sessionId]);
+  useEffect(() => { if (!guest) return; fetch(`${API_URL}/api/sessions/${sessionId}`).then((r) => r.json()).then(setSession); const onConnected = (data) => setSession((current) => ({ ...current, students: data.students })); const onUpdate = (data) => setSession(data); const onExpelled = () => navigate('/student'); const onEnded = () => setSession((current) => ({ ...current, status: 'ended' })); const onAlert = (alert) => { setAlertCount((value) => value + 1); playAlertSound(); showAlertNotification(alert); }; const onHelpResolved = () => setHelpStatus('idle'); socket.on('session:connected', onConnected); socket.on('session:updated', onUpdate); socket.on('student:expelled', onExpelled); socket.on('session:ended', onEnded); socket.on('alert:recorded', onAlert); socket.on('help:resolved', onHelpResolved); const join = () => socket.emit('student:join', { sessionId, guestToken: guest.token }); const onReplaced = () => { setNotice({ title: 'Sesión abierta en otro dispositivo', text: 'Esta sesión se abrió desde otro dispositivo o pestaña, por lo que esta quedó cerrada. El profesor fue avisado.' }); socket.disconnect(); }; const onSessionError = ({ message }) => setNotice({ title: 'No se pudo entrar a la sesión', text: message, retry: !/expulsado/.test(message) }); socket.on('connect', join); socket.on('student:replaced', onReplaced); socket.on('session:error', onSessionError); socket.connect(); if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); return () => { socket.off('session:connected', onConnected); socket.off('session:updated', onUpdate); socket.off('student:expelled', onExpelled); socket.off('session:ended', onEnded); socket.off('alert:recorded', onAlert); socket.off('help:resolved', onHelpResolved); socket.off('connect', join); socket.off('student:replaced', onReplaced); socket.off('session:error', onSessionError); socket.disconnect(); }; }, [sessionId]);
   function enableSound() { const AudioContextClass = window.AudioContext || window.webkitAudioContext; if (!AudioContextClass) return; audioContext.current = new AudioContextClass(); audioContext.current.resume(); setSoundEnabled(true); }
   function playAlertSound() { if (!audioContext.current || !soundEnabled) return; const oscillator = audioContext.current.createOscillator(); const gain = audioContext.current.createGain(); oscillator.frequency.value = 880; gain.gain.setValueAtTime(0.18, audioContext.current.currentTime); gain.gain.exponentialRampToValueAtTime(0.001, audioContext.current.currentTime + 0.35); oscillator.connect(gain); gain.connect(audioContext.current.destination); oscillator.start(); oscillator.stop(audioContext.current.currentTime + 0.35); }
   function showAlertNotification(alert) { if ('Notification' in window && Notification.permission === 'granted') new Notification('Actividad registrada', { body: alert.message }); }
   function requestHelp() { socket.emit('student:help_request', { sessionId }); setHelpStatus('pending'); }
   function cancelHelp() { socket.emit('student:help_cancel', { sessionId }); setHelpStatus('idle'); }
   useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, []);
-  useEffect(() => { const report = (type, message) => { setAlertCount((value) => value + 1); socket.emit('student:event', { sessionId, type, message }); }; let lastInteraction = Date.now(); const markInteraction = () => { lastInteraction = Date.now(); }; const interactionEvents = ['pointerdown', 'touchstart', 'keydown', 'scroll']; interactionEvents.forEach((eventName) => window.addEventListener(eventName, markInteraction, { passive: true })); const visibility = () => { if (!document.hidden) return; const idleMs = Date.now() - lastInteraction; if (idleMs >= 5000) report('screen_lock', 'Ocultó la pantalla tras un rato sin tocarla (posible bloqueo o cierre)'); else report('tab_switch', 'Cambió de pestaña o aplicación'); }; const blur = () => { if (!document.hidden) report('window_blur', 'Perdió foco de ventana'); }; window.addEventListener('blur', blur); document.addEventListener('visibilitychange', visibility); return () => { interactionEvents.forEach((eventName) => window.removeEventListener(eventName, markInteraction)); window.removeEventListener('blur', blur); document.removeEventListener('visibilitychange', visibility); }; }, [sessionId]);
+  useEffect(() => {
+    if (!guest) return undefined;
+    // Cada acción del alumno se envía al servidor, que la registra y avisa al profesor. El contador local lo
+    // actualiza la confirmación del servidor, así no se cuenta doble.
+    const lastSent = {};
+    const report = (type, message, minGapMs = 700) => {
+      const now = Date.now();
+      if (now - (lastSent[type] ?? 0) < minGapMs) return;
+      lastSent[type] = now;
+      socket.emit('student:event', { sessionId, type, message });
+    };
+    let lastInteraction = Date.now();
+    let hiddenAt = null;
+    let idleReported = false;
+    const markInteraction = () => { lastInteraction = Date.now(); idleReported = false; };
+    const interactionEvents = ['pointerdown', 'touchstart', 'keydown', 'scroll', 'mousemove'];
+    interactionEvents.forEach((eventName) => window.addEventListener(eventName, markInteraction, { passive: true }));
+
+    const visibility = () => {
+      if (document.hidden) {
+        const idleMs = Date.now() - lastInteraction;
+        hiddenAt = Date.now();
+        if (idleMs >= 5000) report('screen_lock', 'Ocultó la pantalla tras un rato sin tocarla (posible bloqueo o cierre)');
+        else report('tab_switch', 'Cambió de pestaña o aplicación');
+      } else if (hiddenAt) {
+        const seconds = Math.round((Date.now() - hiddenAt) / 1000);
+        hiddenAt = null;
+        report('returned', `Volvió a la pantalla del examen tras ${seconds} s`);
+      }
+    };
+    const blur = () => { if (!document.hidden) report('window_blur', 'Perdió foco de ventana'); };
+    const keydown = (event) => {
+      const key = event.key?.toLowerCase();
+      const command = event.ctrlKey || event.metaKey;
+      if (key === 'printscreen') report('screenshot_key', 'Presionó la tecla Imprimir pantalla');
+      else if (key === 'f12' || (command && event.shiftKey && ['i', 'j', 'c'].includes(key))) report('shortcut', 'Intentó abrir las herramientas de desarrollador');
+      else if (command && ['u', 's', 'f', 'a'].includes(key)) report('shortcut', `Usó el atajo ${event.metaKey ? 'Cmd' : 'Ctrl'}+${key.toUpperCase()}`);
+    };
+    const listeners = [
+      [window, 'blur', blur], [document, 'visibilitychange', visibility], [document, 'keydown', keydown],
+      [document, 'copy', () => report('copy', 'Copió contenido de la página')], [document, 'cut', () => report('cut', 'Cortó contenido de la página')], [document, 'paste', () => report('paste', 'Pegó contenido en la página')],
+      [document, 'contextmenu', () => report('context_menu', 'Abrió el menú contextual (clic derecho o pulsación larga)')],
+      [window, 'beforeprint', () => report('print', 'Intentó imprimir la página')],
+      [window, 'orientationchange', () => report('orientation_change', 'Giró la pantalla del dispositivo', 2000)]
+    ];
+    listeners.forEach(([target, eventName, handler]) => target.addEventListener(eventName, handler));
+    const idleTimer = setInterval(() => {
+      if (!document.hidden && !idleReported && Date.now() - lastInteraction > 90_000) { idleReported = true; report('idle', 'Sin interacción con la pantalla por más de 90 s'); }
+    }, 5000);
+    return () => {
+      interactionEvents.forEach((eventName) => window.removeEventListener(eventName, markInteraction));
+      listeners.forEach(([target, eventName, handler]) => target.removeEventListener(eventName, handler));
+      clearInterval(idleTimer);
+    };
+  }, [sessionId]);
   const remainingSeconds = session?.endsAt ? Math.max(0, Math.ceil((Date.parse(session.endsAt) - now) / 1000)) : 0;
   const formatted = session?.status === 'active' ? `${String(Math.floor(remainingSeconds / 60)).padStart(2, '0')}:${String(remainingSeconds % 60).padStart(2, '0')}` : '--:--';
   const waiting = session?.status === 'waiting';
-  if (notice) return <div className="live-shell"><header className="live-header"><Brand /><span className="secure-label">Sesión cerrada</span></header><section className="live-content ended-screen"><div className="live-kicker">{session?.examName || 'Sesión de evaluación'}</div><h1>{notice.title}</h1><p className="live-intro">{notice.text}</p></section></div>;
+  if (notice) return <div className="live-shell"><header className="live-header"><Brand /><span className="secure-label">Sesión cerrada</span></header><section className="live-content ended-screen"><div className="live-kicker">{session?.examName || 'Sesión de evaluación'}</div><h1>{notice.title}</h1><p className="live-intro">{notice.text}</p>{notice.retry && <Link className="button button-dark" to={`/student/${sessionId}`} onClick={() => localStorage.removeItem(guestStorageKey(sessionId))}>Volver a registrarme <span>→</span></Link>}</section></div>;
   if (session?.status === 'ended') return <div className="live-shell"><header className="live-header"><Brand /><span className="secure-label">Sesión cerrada</span></header><section className="live-content ended-screen"><div className="live-kicker">{session.examName}</div><h1>Examen<br /><em>finalizado.</em></h1><p className="live-intro">El profesor ha cerrado esta sesión. Tus respuestas y tu registro han quedado guardados.</p></section></div>;
   return <div className="live-shell"><header className="live-header"><Brand /><span className="secure-label"><i /> Sesión protegida</span></header><section className="live-content"><div className="live-kicker">{session?.examName || 'Sesión de evaluación'} <span>· {waiting ? 'ESPERANDO INICIO' : 'EN CURSO'}</span></div><h1>Hola, {name.split(' ')[0]}.</h1><p className="live-intro">{waiting ? 'El profesor aún no ha iniciado la evaluación. Permanece en esta pantalla.' : 'Esta pantalla permanece activa mientras realizas tu evaluación.'}</p><div className="timer-card"><span>{waiting ? 'TIEMPO PENDIENTE' : 'TIEMPO RESTANTE'}</span><strong>{formatted}</strong><div className="timer-track"><i style={{ width: session?.status === 'active' ? `${Math.max(0, Math.min(100, (remainingSeconds / (session.duration * 60)) * 100))}%` : '0%' }} /></div></div><div className="live-stats"><div><strong>{session?.students?.filter((s) => s.status === 'active').length || 1}</strong><span>compañeros<br />presentes</span></div><div><strong>{alertCount}</strong><span>eventos<br />registrados</span></div></div><div className="live-notice"><span>◉</span><p><strong>{waiting ? 'Conectado correctamente.' : 'Tu sesión está siendo supervisada.'}</strong><br />{waiting ? 'Recibirás el inicio en esta misma pantalla.' : 'Permanece en esta pestaña hasta entregar tu evaluación.'}</p></div><button className="sound-toggle" onClick={enableSound}>{soundEnabled ? 'Sonido activado' : 'Activar sonido de alertas'}</button></section><button className={`help-button${helpStatus === 'pending' ? ' help-button-pending' : ''}`} type="button" onClick={helpStatus === 'pending' ? cancelHelp : requestHelp}>{helpStatus === 'pending' ? 'Esperando al profesor… (cancelar)' : '✋ Tengo una duda'}</button></div>;
 }

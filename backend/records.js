@@ -40,6 +40,7 @@ export function examRecord(session) {
     examName: session.examName,
     description: session.description ?? '',
     courseId: session.courseId ?? null,
+    courseCustom: session.courseCustom ?? false,
     courseName: session.courseName ?? null,
     courseCode: session.courseCode ?? null,
     career: session.career ?? null,
