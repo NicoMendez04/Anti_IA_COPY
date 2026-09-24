@@ -18,6 +18,30 @@ const NAV = {
   estudiante: [['/student', 'Unirme a un examen'], ['/student/exams', 'Mis exámenes'], ['/student/profile', 'Mi perfil']]
 };
 
+// Ramos que un profesor puede usar: los de sus áreas (el administrador ve todas).
+export function availableAreas(catalog, profile, isAdmin) {
+  const chosen = new Set(profile?.specialtyIds ?? []);
+  return (catalog?.specialties ?? []).filter((area) => isAdmin || chosen.has(area.id)).map((area) => ({
+    area,
+    courses: (catalog.courses ?? []).filter((course) => course.specialtyIds?.includes(area.id))
+  })).filter((group) => group.courses.length);
+}
+
+const courseLabel = (course) => `${course.name}${course.career ? ` · ${course.career}` : ''}${course.semester ? ` · Sem ${course.semester}` : ''}`;
+
+export function CourseFields({ form, setForm, profile, catalog, isAdmin }) {
+  const hasCatalog = (catalog?.courses ?? []).length > 0;
+  const groups = availableAreas(catalog, profile, isAdmin);
+  return <>
+    {profile?.name && <p className="professor-line">Profesor/a: <strong>{profile.name}</strong></p>}
+    {hasCatalog && !isAdmin && !(profile?.specialtyIds ?? []).length && <p className="notice-box">Antes de crear una sesión, elige tus áreas de profesorado en <Link to="/professor/profile">tu perfil</Link>. Así solo verás los ramos que te corresponden.</p>}
+    {hasCatalog && (isAdmin || (profile?.specialtyIds ?? []).length > 0) && <label>Ramo<select required={!isAdmin} value={form.courseId} onChange={(e) => setForm({ ...form, courseId: e.target.value })}>
+      <option value="">{isAdmin ? 'Sin ramo (opcional)' : 'Elige el ramo…'}</option>
+      {groups.map(({ area, courses }) => <optgroup key={area.id} label={area.name}>{courses.map((course) => <option key={`${area.id}-${course.id}`} value={course.id}>{courseLabel(course)}</option>)}</optgroup>)}
+    </select></label>}
+  </>;
+}
+
 const formatDate = (iso) => (iso ? new Date(iso).toLocaleString('es-CL', { dateStyle: 'medium', timeStyle: 'short' }) : '—');
 const formatTime = (iso) => (iso ? new Date(iso).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '—');
 const alertLabel = (alert) => ALERT_LABELS[alert.type] ?? alert.type;
@@ -65,11 +89,11 @@ export function AreaNav({ role, profile, onLogout, admin }) {
   </nav>;
 }
 
-export function ProfileView({ api, role, profile, onSaved }) {
+export function ProfileView({ api, role, profile, catalog, onSaved }) {
   const [form, setForm] = useState(null);
   const [message, setMessage] = useState({ error: '', ok: '' });
   const [saving, setSaving] = useState(false);
-  useEffect(() => { if (profile) setForm({ name: profile.name ?? '', institution: profile.institution ?? '', department: profile.department ?? '', subjects: profile.subjects ?? '', career: profile.career ?? '', studentId: profile.studentId ?? '', avatarColor: profile.avatarColor ?? AVATAR_COLORS[0] }); }, [profile]);
+  useEffect(() => { if (profile) setForm({ name: profile.name ?? '', institution: profile.institution ?? '', department: profile.department ?? '', specialtyIds: profile.specialtyIds ?? [], career: profile.career ?? '', studentId: profile.studentId ?? '', avatarColor: profile.avatarColor ?? AVATAR_COLORS[0] }); }, [profile]);
   if (!form) return <p className="admin-empty">Cargando perfil…</p>;
   const set = (field) => (event) => setForm({ ...form, [field]: event.target.value });
   async function save(event) {
@@ -85,7 +109,14 @@ export function ProfileView({ api, role, profile, onSaved }) {
       <label>Institución<input value={form.institution} onChange={set('institution')} placeholder="Ej. Universidad de Chile" /></label>
       {role === 'profesor' ? <>
         <label>Departamento o facultad<input value={form.department} onChange={set('department')} /></label>
-        <label>Asignaturas<input value={form.subjects} onChange={set('subjects')} placeholder="Ej. Álgebra, Cálculo I" /></label>
+        <div className="areas-picker"><span>Áreas de profesorado</span>
+          {(catalog?.specialties ?? []).length ? <div className="area-chips">{catalog.specialties.map((area) => { const on = form.specialtyIds.includes(area.id); const total = (catalog.courses ?? []).filter((course) => course.specialtyIds?.includes(area.id)).length; return <button key={area.id} type="button" aria-pressed={on} className={on ? 'is-active' : ''} onClick={() => setForm({ ...form, specialtyIds: on ? form.specialtyIds.filter((id) => id !== area.id) : [...form.specialtyIds, area.id] })}>{area.name} <small>{total} ramos</small></button>; })}</div>
+            : <p className="muted-note">El administrador aún no cargó las áreas de profesorado.</p>}
+          <small className="muted-note">Puedes elegir más de un área. Solo podrás crear sesiones en los ramos de las áreas que elijas.</small>
+        </div>
+        {form.specialtyIds.length > 0 && <div className="my-courses"><span>Ramos disponibles para tus sesiones</span>
+          {availableAreas(catalog, { specialtyIds: form.specialtyIds }, false).map(({ area, courses }) => <details key={area.id}><summary>{area.name} · {courses.length} ramos</summary><ul>{courses.map((course) => <li key={course.id}>{course.name} <small>{course.career}{course.semester ? ` · Sem ${course.semester}` : ''}</small></li>)}</ul></details>)}
+        </div>}
       </> : <>
         <label>Carrera<input value={form.career} onChange={set('career')} /></label>
         <label>Matrícula<input value={form.studentId} onChange={set('studentId')} /></label>
@@ -146,8 +177,9 @@ function ExamDetail({ api, download, detail, setDetail, onBack, onDeleted }) {
 
   return <div className="exam-detail">
     <button className="row-action back-link" type="button" onClick={onBack}>← Volver a mis exámenes</button>
-    <div className="admin-heading"><div><h1 className="detail-title">{detail.examName}</h1><p className="detail-meta">{formatDate(detail.createdAt)} · {detail.duration} min · <span className={`status-pill exam-${detail.status}`}>{EXAM_STATUS[detail.status]}</span></p></div>
+    <div className="admin-heading"><div><h1 className="detail-title">{detail.examName}</h1><p className="detail-meta">{detail.courseName ? `${detail.courseName} · ` : ''}{formatDate(detail.createdAt)} · {detail.duration} min · <span className={`status-pill exam-${detail.status}`}>{EXAM_STATUS[detail.status]}</span></p></div>
       <div className="detail-actions"><button className="button button-dark" type="button" onClick={exportExcel}>Informe Excel <span>↓</span></button><button className="button button-light" type="button" onClick={exportStudents}>Exportar alumnos <span>↓</span></button><button className="button button-light" type="button" onClick={exportAlerts}>Exportar alertas <span>↓</span></button></div></div>
+    {detail.description && <p className="detail-desc">{detail.description}</p>}
     <div className="metrics"><div><strong>{detail.students?.length ?? 0}</strong><span>alumnos</span></div><div><strong>{detail.alerts?.length ?? 0}</strong><span>alertas</span></div><div><strong>{Object.values(reviews).filter((review) => review.status === 'suspicious').length}</strong><span>sospechosos</span></div><div><strong>{detail.stats?.helpRequested ?? detail.helpRequestCount ?? 0}</strong><span>ayudas solicitadas</span></div>{detail.stats?.durationSeconds != null && <div><strong>{formatSeconds(detail.stats.durationSeconds)}</strong><span>duración real</span></div>}</div>
     {message.error && <p className="error-message">{message.error}</p>}{message.ok && <p className="notice-message">{message.ok}</p>}
     <div className="tabs" role="tablist">{[['students', 'Alumnos'], ['history', 'Historial']].map(([value, label]) => <button key={value} type="button" role="tab" aria-selected={tab === value} className={tab === value ? 'is-active' : ''} onClick={() => setTab(value)}>{label}</button>)}</div>
@@ -191,7 +223,7 @@ export function ProfessorExamsView({ api, download }) {
     <div className="admin-table-wrap"><table className="admin-table">
       <thead><tr><th>Examen</th><th>Fecha</th><th>Estado</th><th>Alumnos</th><th>Alertas</th><th>Sospechosos</th><th /></tr></thead>
       <tbody>{visible.map((exam) => <tr key={exam.sessionId}>
-        <td><strong>{exam.examName}</strong><span>{exam.duration} min</span></td><td>{formatDate(exam.createdAt)}</td>
+        <td><strong>{exam.examName}</strong><span>{exam.courseName ? `${exam.courseName} · ` : ''}{exam.duration} min</span></td><td>{formatDate(exam.createdAt)}</td>
         <td><span className={`status-pill exam-${exam.status}`}>{EXAM_STATUS[exam.status]}</span></td>
         <td>{exam.studentCount}</td><td>{exam.alertCount}</td><td>{exam.suspiciousCount}</td>
         <td className="admin-actions"><button type="button" onClick={() => open(exam.sessionId)}>Abrir</button></td>
@@ -213,7 +245,7 @@ export function StudentExamsView({ api }) {
       <thead><tr><th>Examen</th><th>Profesor</th><th>Fecha</th><th>Estado</th><th>Mis alertas</th></tr></thead>
       <tbody>{(list ?? []).map((exam) => <Fragment key={exam.sessionId}>
         <tr>
-          <td><strong>{exam.examName}</strong><span>{exam.duration} min</span></td><td>{exam.professorName}</td><td>{formatDate(exam.createdAt)}</td>
+          <td><strong>{exam.examName}</strong><span>{exam.courseName ? `${exam.courseName} · ` : ''}{exam.duration} min</span></td><td>{exam.professorName}</td><td>{formatDate(exam.createdAt)}</td>
           <td><span className={`status-pill exam-${exam.status}`}>{exam.myStatus === 'expelled' ? 'Expulsado' : EXAM_STATUS[exam.status]}</span></td>
           <td>{exam.myAlerts.length ? <button type="button" className="row-action alert-toggle" onClick={() => setOpen({ ...open, [exam.sessionId]: !open[exam.sessionId] })}>{exam.myAlerts.length} {open[exam.sessionId] ? '▴' : '▾'}</button> : 0}</td>
         </tr>

@@ -4,7 +4,8 @@ import { io } from 'socket.io-client';
 import { Html5QrcodeScanner } from 'html5-qrcode';
 import { GoogleAuthProvider, OAuthProvider, onIdTokenChanged, signInWithEmailAndPassword, signInWithPopup, signOut } from 'firebase/auth';
 import { firebaseAuth } from './firebase.js';
-import { AreaNav, ProfessorExamsView, ProfileView, StudentExamsView } from './panels.jsx';
+import { AreaNav, CourseFields, ProfessorExamsView, ProfileView, StudentExamsView } from './panels.jsx';
+import { CatalogAdmin } from './catalogAdmin.jsx';
 
 const API_URL = import.meta.env.VITE_API_URL || `http://${window.location.hostname}:3001`;
 const socket = io(API_URL, { autoConnect: false });
@@ -178,6 +179,7 @@ function RoleArea({ role, view }) {
   const { auth, login, logout } = useAuth(role);
   const navigate = useNavigate();
   const [profile, setProfile] = useState(null);
+  const [catalog, setCatalog] = useState(null);
   const api = (path, options) => request(auth.token, path, options);
   const download = async (path, filename) => {
     const response = await fetch(`${API_URL}${path}`, { headers: { Authorization: `Bearer ${auth.token}` } });
@@ -186,10 +188,10 @@ function RoleArea({ role, view }) {
     link.click();
     URL.revokeObjectURL(link.href);
   };
-  useEffect(() => { if (auth) api('/api/me/profile').then(setProfile).catch(() => {}); }, [Boolean(auth)]);
+  useEffect(() => { if (!auth) return; api('/api/me/profile').then(setProfile).catch(() => {}); api('/api/catalog').then(setCatalog).catch(() => {}); }, [Boolean(auth)]);
   if (!auth) return <Layout><LoginForm role={role} onAuthenticated={login} /></Layout>;
   return <Layout><AreaNav role={role} profile={profile} onLogout={logout} admin={auth.role === 'admin'} /><section className="area-page">
-    {view === 'profile' ? <ProfileView api={api} role={role} profile={profile} onSaved={(saved) => { const firstTime = profile && !profile.onboarded; setProfile(saved); if (firstTime) navigate(homeFor({ role, onboarded: true })); }} /> : role === 'profesor' ? <ProfessorExamsView api={api} download={download} /> : <StudentExamsView api={api} />}
+    {view === 'profile' ? <ProfileView api={api} role={role} profile={profile} catalog={catalog} onSaved={(saved) => { const firstTime = profile && !profile.onboarded; setProfile(saved); if (firstTime) navigate(homeFor({ role, onboarded: true })); }} /> : role === 'profesor' ? <ProfessorExamsView api={api} download={download} /> : <StudentExamsView api={api} />}
   </section></Layout>;
 }
 
@@ -223,7 +225,10 @@ function Landing() {
 
 function ProfessorDashboard() {
   const { auth, login, logout } = useAuth('profesor');
-  const [form, setForm] = useState({ professorName: '', examName: '', duration: 60 });
+  const [form, setForm] = useState({ examName: '', duration: 60, courseId: '', description: '' });
+  const [profile, setProfile] = useState(null);
+  const [catalog, setCatalog] = useState(null);
+  useEffect(() => { if (!auth) return; request(auth.token, '/api/me/profile').then(setProfile).catch(() => {}); request(auth.token, '/api/catalog').then(setCatalog).catch(() => {}); }, [Boolean(auth)]);
   const [session, setSession] = useState(null);
   const [error, setError] = useState('');
   const [now, setNow] = useState(new Date());
@@ -275,7 +280,7 @@ function ProfessorDashboard() {
   async function createSession(event) {
     event.preventDefault(); setError('');
     try {
-      const response = await fetch(`${API_URL}/api/sessions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${auth.token}` }, body: JSON.stringify(form) });
+      const response = await fetch(`${API_URL}/api/sessions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${auth.token}` }, body: JSON.stringify({ examName: form.examName, duration: form.duration, courseId: form.courseId, description: form.description }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.message);
       setSession(data);
@@ -296,7 +301,7 @@ function ProfessorDashboard() {
 
   if (!auth) return <Layout><LoginForm role="profesor" onAuthenticated={login} /></Layout>;
 
-  if (!session) return <Layout><AreaNav role="profesor" admin={auth.role === 'admin'} /><section className="setup-page"><div className="page-kicker">PANEL DEL PROFESOR <span>01</span></div><div className="setup-grid"><div><h1>Abre una nueva<br /><em>sesión.</em></h1><p className="lede">Configura el espacio de evaluación y comparte el acceso con tu clase.</p><div className="landing-note"><span className="note-line" /> <span>{auth.email} · <button className="row-action" type="button" onClick={logout}>Cerrar sesión</button></span></div></div><form className="session-form" onSubmit={createSession}><label>Tu nombre<input required value={form.professorName} onChange={(e) => setForm({ ...form, professorName: e.target.value })} placeholder="Ej. Ana García" /></label><label>Nombre del examen<input required value={form.examName} onChange={(e) => setForm({ ...form, examName: e.target.value })} placeholder="Ej. Álgebra · Unidad 2" /></label><label>Duración <span className="label-help">MINUTOS</span><input type="number" min="5" max="240" value={form.duration} onChange={(e) => setForm({ ...form, duration: e.target.value })} /></label>{error && <p className="error-message">{error}</p>}<button className="button button-dark" type="submit">Generar sesión <span>→</span></button></form></div></section></Layout>;
+  if (!session) return <Layout><AreaNav role="profesor" admin={auth.role === 'admin'} /><section className="setup-page"><div className="page-kicker">PANEL DEL PROFESOR <span>01</span></div><div className="setup-grid"><div><h1>Abre una nueva<br /><em>sesión.</em></h1><p className="lede">Configura el espacio de evaluación y comparte el acceso con tu clase.</p><div className="landing-note"><span className="note-line" /> <span>{auth.email} · <button className="row-action" type="button" onClick={logout}>Cerrar sesión</button></span></div></div><form className="session-form" onSubmit={createSession}><CourseFields form={form} setForm={setForm} profile={profile} catalog={catalog} isAdmin={auth.role === 'admin'} /><label>Nombre del examen<input required value={form.examName} onChange={(e) => setForm({ ...form, examName: e.target.value })} placeholder="Ej. Álgebra · Unidad 2" /></label><label>Descripción <span className="label-help">OPCIONAL</span><textarea rows={3} maxLength={500} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Ej. Unidad 2: derivadas e integrales. Se permite calculadora." /></label><label>Duración <span className="label-help">MINUTOS</span><input type="number" min="5" max="240" value={form.duration} onChange={(e) => setForm({ ...form, duration: e.target.value })} /></label>{error && <p className="error-message">{error}</p>}<button className="button button-dark" type="submit" disabled={(catalog?.courses ?? []).length > 0 && auth.role !== 'admin' && !(profile?.specialtyIds ?? []).length}>Generar sesión <span>→</span></button></form></div></section></Layout>;
 
   const activeStudents = session.students?.filter((student) => student.status === 'active') || [];
   if (session.status === 'ended') return <SessionSummary session={session} />;
@@ -392,7 +397,7 @@ function AdminPanel() {
 
   return <Layout><section className="admin-page">
     <div className="page-kicker">ADMINISTRACIÓN DE CUENTAS <span>{users.length}</span></div>
-    <div className="admin-heading"><h1>Gestión de<br /><em>usuarios.</em></h1><div className="landing-note"><span className="note-line" /> <span>{auth.email} · <Link className="admin-link" to="/professor">Modo profesor</Link> · <button className="row-action" type="button" onClick={logout}>Cerrar sesión</button></span></div></div>
+    <div className="admin-heading"><h1>Gestión de<br /><em>usuarios.</em></h1><div className="landing-note"><span className="note-line" /> <span>{auth.email} · <Link className="admin-link" to="/admin/catalog">Catálogo de ramos</Link> · <Link className="admin-link" to="/professor">Modo profesor</Link> · <button className="row-action" type="button" onClick={logout}>Cerrar sesión</button></span></div></div>
     {pending > 0 && <p className="notice-message">{pending} {pending === 1 ? 'solicitud espera' : 'solicitudes esperan'} tu revisión.</p>}
     {error && <p className="error-message">{error}</p>}
     <div className="admin-toolbar">
@@ -426,4 +431,10 @@ function AdminPanel() {
   </section></Layout>;
 }
 
-export default function App() { return <Routes><Route path="/" element={<Landing />} /><Route path="/login" element={<LoginPage />} /><Route path="/register" element={<RegisterPage />} /><Route path="/professor" element={<ProfessorDashboard />} /><Route path="/professor/exams" element={<RoleArea role="profesor" view="exams" />} /><Route path="/professor/profile" element={<RoleArea role="profesor" view="profile" />} /><Route path="/student/exams" element={<RoleArea role="estudiante" view="exams" />} /><Route path="/student/profile" element={<RoleArea role="estudiante" view="profile" />} /><Route path="/admin" element={<AdminPanel />} /><Route path="/student" element={<StudentEntry />} /><Route path="/student/:sessionId" element={<StudentEntry />} /><Route path="/student/:sessionId/live" element={<StudentLive />} /></Routes>; }
+function AdminCatalogPage() {
+  const { auth, login } = useAuth('admin');
+  if (!auth) return <Layout><LoginForm role="admin" onAuthenticated={login} /></Layout>;
+  return <Layout><section className="admin-page"><Link className="admin-link" to="/admin">← Usuarios</Link><CatalogAdmin api={(path, options) => request(auth.token, path, options)} /></section></Layout>;
+}
+
+export default function App() { return <Routes><Route path="/" element={<Landing />} /><Route path="/login" element={<LoginPage />} /><Route path="/register" element={<RegisterPage />} /><Route path="/professor" element={<ProfessorDashboard />} /><Route path="/professor/exams" element={<RoleArea role="profesor" view="exams" />} /><Route path="/professor/profile" element={<RoleArea role="profesor" view="profile" />} /><Route path="/student/exams" element={<RoleArea role="estudiante" view="exams" />} /><Route path="/student/profile" element={<RoleArea role="estudiante" view="profile" />} /><Route path="/admin" element={<AdminPanel />} /><Route path="/admin/catalog" element={<AdminCatalogPage />} /><Route path="/student" element={<StudentEntry />} /><Route path="/student/:sessionId" element={<StudentEntry />} /><Route path="/student/:sessionId/live" element={<StudentLive />} /></Routes>; }

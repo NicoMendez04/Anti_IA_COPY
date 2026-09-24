@@ -7,7 +7,8 @@ import { Server } from 'socket.io';
 import { randomUUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { authFromToken, registerAccountRoutes, requireAuth } from './accounts.js';
+import { authFromToken, getUserProfile, registerAccountRoutes, requireAuth } from './accounts.js';
+import { registerCatalogRoutes, resolveCourse } from './catalog.js';
 import { logEvent, persistSession, registerRecordRoutes } from './records.js';
 
 const app = express();
@@ -31,6 +32,8 @@ function publicSession(session) {
     sessionId: session.sessionId,
     professorName: session.professorName,
     examName: session.examName,
+    courseName: session.courseName ?? null,
+    description: session.description ?? '',
     duration: session.duration,
     createdAt: session.createdAt,
     status: session.status,
@@ -79,12 +82,18 @@ app.get('/api/health', (_req, res) => res.json({ ok: true }));
 
 registerAccountRoutes(app);
 registerRecordRoutes(app, sessions);
+registerCatalogRoutes(app);
 
 app.post('/api/sessions', requireAuth('profesor', 'admin'), async (req, res) => {
-  const { professorName, examName, duration = 60 } = req.body;
-  if (!professorName?.trim() || !examName?.trim()) {
-    return res.status(400).json({ message: 'El nombre del profesor y el examen son obligatorios.' });
-  }
+  const { examName, duration = 60, courseId } = req.body;
+  if (!examName?.trim()) return res.status(400).json({ message: 'El nombre del examen es obligatorio.' });
+
+  // El nombre sale del perfil de quien inició sesión y el ramo debe pertenecer a sus áreas de profesorado.
+  const profile = (await getUserProfile(req.auth.uid)) ?? {};
+  const professorName = profile.name?.trim() || req.auth.name || req.auth.email;
+  const resolved = await resolveCourse({ courseId, professorSpecialtyIds: profile.specialtyIds ?? [], isAdmin: req.auth.role === 'admin' });
+  if (resolved.error) return res.status(400).json({ message: resolved.error });
+  const { course, specialties } = resolved;
 
   const sessionId = `sess_${randomUUID().slice(0, 8)}`;
   const qrData = `${process.env.PUBLIC_APP_URL ?? 'http://localhost:5173'}/student/${sessionId}`;
@@ -93,8 +102,17 @@ app.post('/api/sessions', requireAuth('profesor', 'admin'), async (req, res) => 
     sessionId,
     professorUid: req.auth.uid,
     professorEmail: req.auth.email,
-    professorName: professorName.trim(),
+    professorName,
     examName: examName.trim(),
+    description: String(req.body.description ?? '').trim().slice(0, 500),
+    courseId: course?.id ?? null,
+    courseName: course?.name ?? null,
+    courseCode: course?.code ?? null,
+    career: course?.career ?? null,
+    courseSemester: course?.semester ?? null,
+    courseCategory: course?.category ?? null,
+    specialtyIds: specialties.map((item) => item.id),
+    specialtyNames: specialties.map((item) => item.name),
     duration: Math.max(5, Number(duration) || 60),
     createdAt: new Date().toISOString(),
     status: 'waiting',
@@ -111,7 +129,7 @@ app.post('/api/sessions', requireAuth('profesor', 'admin'), async (req, res) => 
   };
   sessions.set(sessionId, session);
   persistSession(session);
-  logEvent(sessionId, 'session_created', { actor: req.auth, data: { examName: session.examName, duration: session.duration } });
+  logEvent(sessionId, 'session_created', { actor: req.auth, data: { examName: session.examName, duration: session.duration, courseName: session.courseName, description: session.description } });
   res.status(201).json({ ...publicSession(session), qrCode, qrData });
 });
 

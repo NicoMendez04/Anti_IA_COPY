@@ -93,6 +93,11 @@ export async function authFromToken(token) {
   return { uid, email, role: profile.role, name: profile.name };
 }
 
+export async function getUserProfile(uid) {
+  const snapshot = await users.doc(uid).get();
+  return snapshot.exists ? snapshot.data() : null;
+}
+
 export function requireAuth(...roles) {
   return async (req, res, next) => {
     const context = await authFromToken(bearerToken(req));
@@ -223,6 +228,14 @@ export function registerAccountRoutes(app) {
     if (req.body.avatarColor !== undefined) {
       if (!AVATAR_COLORS.includes(req.body.avatarColor)) return res.status(400).json({ message: 'Color no válido.' });
       updates.avatarColor = req.body.avatarColor;
+    }
+    if (req.body.specialtyIds !== undefined && req.auth.role !== 'estudiante') {
+      const ids = [...new Set((Array.isArray(req.body.specialtyIds) ? req.body.specialtyIds : []).map(String))].slice(0, 12);
+      if (ids.length) {
+        const found = await db.getAll(...ids.map((id) => db.collection('specialties').doc(id)));
+        if (found.some((doc) => !doc.exists || doc.data().active === false)) return res.status(400).json({ message: 'Alguna de las áreas elegidas no existe.' });
+      }
+      updates.specialtyIds = ids;
     }
     updates.onboarded = true;
     updates.updatedAt = new Date().toISOString();

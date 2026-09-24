@@ -73,7 +73,9 @@ export async function buildExamReport({ exam, events, profiles }) {
   const summary = workbook.addWorksheet('Resumen');
   summary.columns = [{ width: 34 }, { width: 46 }];
   const facts = [
-    ['Examen', exam.examName], ['Profesor', exam.professorName], ['Correo del profesor', exam.professorEmail],
+    ['Examen', exam.examName], ['Descripción', exam.description ?? ''], ['Ramo', exam.courseName ?? ''], ['Código del ramo', exam.courseCode ?? ''], ['Carrera', exam.career ?? ''],
+    ['Semestre del ramo', exam.courseSemester ?? ''], ['Categoría del ramo', exam.courseCategory ?? ''], ['Áreas del profesor', (exam.specialtyNames ?? []).join(', ')],
+    ['Profesor', exam.professorName], ['Correo del profesor', exam.professorEmail],
     ['Estado', EXAM_STATUS[exam.status] ?? exam.status], ['Creado', localDate(exam.createdAt)], ['Inicio', localDate(exam.startedAt)], ['Fin', localDate(exam.endedAt)],
     ['Duración configurada (min)', exam.duration], ['Duración real', stats.durationSeconds != null ? formatSeconds(stats.durationSeconds) : ''],
     ['Alumnos', students.length], ['Alertas registradas', alerts.length], ['Alumnos expulsados', stats.expelledCount ?? 0],
