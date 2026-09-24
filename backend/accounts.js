@@ -5,7 +5,8 @@ import { getFirestore } from 'firebase-admin/firestore';
 
 const ROLES = ['admin', 'profesor', 'estudiante'];
 const SELF_REGISTER_ROLES = ['profesor', 'estudiante'];
-const STATUSES = ['pending', 'approved', 'disabled'];
+const STATUSES = ['pending', 'approved', 'rejected', 'disabled'];
+const AVATAR_COLORS = ['#c9f469', '#f4e3a6', '#e6c3bb', '#bfd8f2', '#d9c8f0', '#c7e8d5'];
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const MIN_PASSWORD = 8;
 const PROFILE_TTL_MS = 15_000;
@@ -111,6 +112,32 @@ function limitRegistrations(req, res, next) {
   next();
 }
 
+// Las cuentas creadas directo en Firebase Authentication no tienen ficha en Firestore:
+// se les crea una (pendiente, salvo los administradores de ADMIN_EMAILS) para que el panel las vea.
+export async function syncAuthUsers() {
+  const known = new Set((await users.select().get()).docs.map((doc) => doc.id));
+  let pageToken;
+  let created = 0;
+  do {
+    const page = await auth.listUsers(1000, pageToken);
+    for (const user of page.users) {
+      if (known.has(user.uid) || !user.email) continue;
+      const email = normalizeEmail(user.email);
+      const asAdmin = adminEmails.has(email) && user.providerData.some((provider) => provider.providerId === 'password');
+      await users.doc(user.uid).set({
+        email,
+        name: user.displayName ?? '',
+        role: asAdmin ? 'admin' : 'estudiante',
+        status: asAdmin ? 'approved' : 'pending',
+        createdAt: user.metadata.creationTime ? new Date(user.metadata.creationTime).toISOString() : new Date().toISOString()
+      });
+      created += 1;
+    }
+    pageToken = page.pageToken;
+  } while (pageToken);
+  return created;
+}
+
 function forgetProfile(uid) {
   profileCache.delete(uid);
 }
@@ -120,6 +147,7 @@ export function registerAccountRoutes(app) {
     const email = normalizeEmail(req.body.email);
     const name = String(req.body.name ?? '').trim();
     const { password, role } = req.body;
+    const requestNote = String(req.body.requestNote ?? '').trim().slice(0, 500);
     if (!name) return res.status(400).json({ message: 'Ingresa tu nombre.' });
     if (!EMAIL_RE.test(email)) return res.status(400).json({ message: 'Ingresa un correo válido.' });
     if (typeof password !== 'string' || password.length < MIN_PASSWORD) return res.status(400).json({ message: `La contraseña debe tener al menos ${MIN_PASSWORD} caracteres.` });
@@ -129,8 +157,8 @@ export function registerAccountRoutes(app) {
 
     try {
       const user = await auth.createUser({ email, password, displayName: name });
-      await users.doc(user.uid).set({ email, name, role, status: 'pending', createdAt: new Date().toISOString() });
-      res.status(201).json({ message: 'Cuenta creada. Un administrador debe aprobarla antes de que puedas entrar.' });
+      await users.doc(user.uid).set({ email, name, role, requestNote, status: 'pending', createdAt: new Date().toISOString() });
+      res.status(201).json({ message: 'Solicitud enviada. Un administrador la revisará antes de que puedas entrar.' });
     } catch (err) {
       if (err.code === 'auth/email-already-exists') return res.status(409).json({ message: 'Ya existe una cuenta con ese correo.' });
       console.error('Error al registrar usuario:', err);
@@ -143,7 +171,7 @@ export function registerAccountRoutes(app) {
       const verified = await verify(bearerToken(req), req.query.role);
       if (!verified) return res.status(401).json({ message: 'Sesión no válida.' });
       const { email, profile } = verified;
-      res.json({ email, name: profile.name, role: profile.role, status: profile.status });
+      res.json({ email, name: profile.name, role: profile.role, status: profile.status, onboarded: profile.onboarded === true });
     } catch (err) {
       if (err.code === 'DOMAIN_NOT_ALLOWED') return res.status(403).json({ message: 'Tu correo no pertenece a un dominio autorizado.' });
       console.error('Error al validar la sesión:', err);
@@ -151,9 +179,32 @@ export function registerAccountRoutes(app) {
     }
   });
 
+  // Solicitud de acceso de quien ya se autenticó con un proveedor externo (Google).
+  app.post('/api/auth/request', async (req, res) => {
+    try {
+      const verified = await verify(bearerToken(req), req.body.role);
+      if (!verified) return res.status(401).json({ message: 'Sesión no válida.' });
+      const { uid, profile } = verified;
+      if (profile.status !== 'pending') {
+        const message = profile.status === 'approved' ? 'Ya tienes una cuenta aprobada. Inicia sesión.' : profile.status === 'rejected' ? 'Tu solicitud anterior fue rechazada. Contacta a un administrador.' : 'Tu cuenta está desactivada. Contacta a un administrador.';
+        return res.status(409).json({ message, status: profile.status });
+      }
+      const updates = { requestNote: String(req.body.requestNote ?? '').trim().slice(0, 500) };
+      if (SELF_REGISTER_ROLES.includes(req.body.role)) updates.role = req.body.role;
+      const name = String(req.body.name ?? '').trim().slice(0, 80);
+      if (name) updates.name = name;
+      await users.doc(uid).update(updates);
+      forgetProfile(uid);
+      res.json({ status: 'pending' });
+    } catch (err) {
+      if (err.code === 'DOMAIN_NOT_ALLOWED') return res.status(403).json({ message: 'Tu correo no pertenece a un dominio autorizado.' });
+      console.error('Error al registrar la solicitud:', err);
+      res.status(500).json({ message: 'No se pudo enviar la solicitud.' });
+    }
+  });
+
   const anyRole = requireAuth(...ROLES);
   const profileText = { institution: 120, department: 120, subjects: 200, career: 120, studentId: 40 };
-  const avatarColors = ['#c9f469', '#f4e3a6', '#e6c3bb', '#bfd8f2', '#d9c8f0', '#c7e8d5'];
 
   app.get('/api/me/profile', anyRole, async (req, res) => {
     const snapshot = await users.doc(req.auth.uid).get();
@@ -170,9 +221,10 @@ export function registerAccountRoutes(app) {
       if (req.body[field] !== undefined) updates[field] = String(req.body[field]).trim().slice(0, max);
     }
     if (req.body.avatarColor !== undefined) {
-      if (!avatarColors.includes(req.body.avatarColor)) return res.status(400).json({ message: 'Color no válido.' });
+      if (!AVATAR_COLORS.includes(req.body.avatarColor)) return res.status(400).json({ message: 'Color no válido.' });
       updates.avatarColor = req.body.avatarColor;
     }
+    updates.onboarded = true;
     updates.updatedAt = new Date().toISOString();
     await users.doc(req.auth.uid).update(updates);
     forgetProfile(req.auth.uid);
@@ -183,6 +235,7 @@ export function registerAccountRoutes(app) {
   const adminOnly = requireAuth('admin');
 
   app.get('/api/admin/users', adminOnly, async (_req, res) => {
+    await syncAuthUsers().catch((err) => console.error('No se pudo sincronizar Authentication:', err.message));
     const snapshot = await users.orderBy('createdAt', 'desc').get();
     res.json(snapshot.docs.map((doc) => ({ uid: doc.id, ...doc.data() })));
   });
@@ -198,7 +251,7 @@ export function registerAccountRoutes(app) {
 
     try {
       const user = await auth.createUser({ email, password, displayName: name });
-      const profile = { email, name, role, status: 'approved', createdAt: new Date().toISOString() };
+      const profile = { email, name, role, status: 'approved', onboarded: false, avatarColor: AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)], approvedAt: new Date().toISOString(), approvedBy: req.auth.email, createdAt: new Date().toISOString() };
       await users.doc(user.uid).set(profile);
       res.status(201).json({ uid: user.uid, ...profile });
     } catch (err) {
@@ -230,6 +283,17 @@ export function registerAccountRoutes(app) {
       if (!STATUSES.includes(status)) return res.status(400).json({ message: 'Estado inválido.' });
       updates.status = status;
       authUpdates.disabled = status === 'disabled';
+      const previous = snapshot.data();
+      if (status === 'approved' && previous.status !== 'approved') {
+        updates.approvedAt = new Date().toISOString();
+        updates.approvedBy = req.auth.email;
+        if (previous.onboarded === undefined) updates.onboarded = false;
+        if (!previous.avatarColor) updates.avatarColor = AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)];
+      }
+      if (status === 'rejected') {
+        updates.rejectedAt = new Date().toISOString();
+        updates.rejectedBy = req.auth.email;
+      }
     }
     if (req.body.email !== undefined) {
       const email = normalizeEmail(req.body.email);

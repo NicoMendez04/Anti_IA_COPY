@@ -6,6 +6,13 @@ const REVIEW_LABELS = { '': 'Sin revisar', clear: 'Sin observaciones', suspiciou
 const EXAM_STATUS = { waiting: 'En espera', active: 'En curso', ended: 'Finalizado' };
 const STUDENT_STATUS = { active: 'Conectado', offline: 'Desconectado', expelled: 'Expulsado' };
 const ALERT_LABELS = { tab_switch: 'Cambio de pestaña', window_blur: 'Pérdida de foco', screen_lock: 'Pantalla oculta o bloqueada', disconnected: 'Desconexión', reconnected: 'Reconexión', second_device: 'Otro dispositivo' };
+const EVENT_LABELS = {
+  session_created: 'Sesión creada', session_started: 'Examen iniciado', session_ended: 'Examen finalizado',
+  student_joined: 'Alumno ingresó', student_left: 'Alumno salió', student_reconnected: 'Alumno volvió', student_replaced: 'Sesión abierta en otro dispositivo',
+  alert: 'Alerta', help_requested: 'Pidió ayuda', help_cancelled: 'Canceló su pedido de ayuda', help_resolved: 'Ayuda atendida',
+  student_expelled: 'Alumno expulsado', review_set: 'Revisión del profesor', notes_updated: 'Notas del examen actualizadas', record_archived: 'Registro archivado'
+};
+const CATEGORY_LABELS = { session: 'Sesión', presence: 'Presencia', alert: 'Alertas', help: 'Ayuda', moderation: 'Moderación', review: 'Revisión' };
 const NAV = {
   profesor: [['/professor', 'Nueva sesión'], ['/professor/exams', 'Mis exámenes'], ['/professor/profile', 'Mi perfil']],
   estudiante: [['/student', 'Unirme a un examen'], ['/student/exams', 'Mis exámenes'], ['/student/profile', 'Mi perfil']]
@@ -14,6 +21,25 @@ const NAV = {
 const formatDate = (iso) => (iso ? new Date(iso).toLocaleString('es-CL', { dateStyle: 'medium', timeStyle: 'short' }) : '—');
 const formatTime = (iso) => (iso ? new Date(iso).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '—');
 const alertLabel = (alert) => ALERT_LABELS[alert.type] ?? alert.type;
+const formatSeconds = (seconds) => (seconds < 60 ? `${seconds} s` : `${Math.floor(seconds / 60)} min ${seconds % 60} s`);
+const formatDateTime = (iso) => (iso ? new Date(iso).toLocaleString('es-CL', { dateStyle: 'short', timeStyle: 'medium' }) : '—');
+
+function describeEvent({ type, data }) {
+  const info = data ?? {};
+  switch (type) {
+    case 'session_created': return `${info.examName} · ${info.duration} min`;
+    case 'session_started': return info.endsAt ? `Termina a las ${formatTime(info.endsAt)}` : '';
+    case 'session_ended': return info.reason === 'time_expired' ? 'Se cumplió el tiempo' : 'Cerrado por el profesor';
+    case 'student_joined': return info.sessionStatus === 'active' ? 'Con el examen en curso' : 'Antes del inicio';
+    case 'student_left': return info.sessionStatus === 'active' ? 'Durante el examen' : 'Antes del inicio o tras el cierre';
+    case 'student_reconnected': return `Tras ${formatSeconds(info.awaySeconds ?? 0)} desconectado`;
+    case 'alert': return `${ALERT_LABELS[info.alertType] ?? info.alertType} · ${info.message ?? ''}`;
+    case 'help_resolved': return `Esperó ${formatSeconds(info.waitedSeconds ?? 0)}`;
+    case 'review_set': return `${REVIEW_LABELS[info.status ?? '']}${info.note ? ` · ${info.note}` : ''}`;
+    case 'notes_updated': return info.notes ? `"${info.notes.slice(0, 120)}"` : 'Notas vaciadas';
+    default: return '';
+  }
+}
 
 function downloadCsv(filename, rows) {
   const escape = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`;
@@ -28,10 +54,11 @@ export function Avatar({ name, color }) {
   return <span className="avatar" style={{ background: color || AVATAR_COLORS[0] }}>{initials || '?'}</span>;
 }
 
-export function AreaNav({ role, profile, onLogout }) {
+export function AreaNav({ role, profile, onLogout, admin }) {
   const { pathname } = useLocation();
   return <nav className="area-nav">
     {NAV[role].map(([to, label]) => <Link key={to} to={to} className={pathname === to ? 'is-active' : ''}>{label}</Link>)}
+    {admin && <Link to="/admin">Administración</Link>}
     <span className="area-nav-spacer" />
     {profile && <span className="area-user"><Avatar name={profile.name || profile.email} color={profile.avatarColor} /> {profile.name || profile.email}</span>}
     {onLogout && <button className="row-action" type="button" onClick={onLogout}>Cerrar sesión</button>}
@@ -70,8 +97,35 @@ export function ProfileView({ api, role, profile, onSaved }) {
   </div>;
 }
 
-function ExamDetail({ api, detail, setDetail, onBack, onDeleted }) {
+function HistoryPanel({ api, detail }) {
+  const [events, setEvents] = useState(null);
+  const [error, setError] = useState('');
+  const [category, setCategory] = useState('all');
+  const [studentId, setStudentId] = useState('all');
+  useEffect(() => { setError(''); api(`/api/professor/exams/${detail.sessionId}/events`).then(setEvents).catch((caught) => setError(caught.message)); }, [detail.sessionId]);
+  const visible = (events ?? []).filter((event) => (category === 'all' || event.category === category) && (studentId === 'all' || event.studentId === studentId));
+  const emailOf = (id) => (detail.students ?? []).find((student) => student.studentId === id)?.email ?? '';
+  const exportHistory = () => downloadCsv(`${detail.examName}-historial.csv`, [['Fecha y hora', 'Categoría', 'Evento', 'Alumno', 'Correo del alumno', 'Responsable', 'Detalle'], ...(events ?? []).map((event) => [formatDateTime(event.at), CATEGORY_LABELS[event.category] ?? event.category, EVENT_LABELS[event.type] ?? event.type, event.studentName ?? '', emailOf(event.studentId), event.actor?.email ?? '', describeEvent(event)])]);
+  return <div className="history-panel">
+    <div className="admin-toolbar">
+      <div className="admin-filters">{[['all', 'Todo'], ...Object.entries(CATEGORY_LABELS)].map(([value, label]) => <button key={value} type="button" className={category === value ? 'is-active' : ''} onClick={() => setCategory(value)}>{label}</button>)}</div>
+      <select value={studentId} onChange={(e) => setStudentId(e.target.value)}><option value="all">Todos los alumnos</option>{(detail.students ?? []).map((student) => <option key={student.studentId} value={student.studentId}>{student.name}</option>)}</select>
+      <button className="button button-light history-export" type="button" onClick={exportHistory} disabled={!events?.length}>Exportar historial <span>↓</span></button>
+    </div>
+    {error && <p className="error-message">{error}</p>}
+    {!events && !error && <p className="admin-empty">Cargando historial…</p>}
+    {events && <ol className="timeline">{visible.map((event) => <li key={event.id} className={`tl-${event.category}`}>
+      <time>{formatDateTime(event.at)}</time>
+      <div><strong>{EVENT_LABELS[event.type] ?? event.type}</strong>{event.studentName && <span className="tl-who"> · {event.studentName}</span>}<p>{describeEvent(event)}{event.actor?.email && <em> — {event.actor.email}</em>}</p></div>
+    </li>)}</ol>}
+    {events && visible.length === 0 && <p className="admin-empty">No hay eventos que coincidan.</p>}
+    {events && <p className="history-count">{visible.length} de {events.length} eventos · el historial es de solo lectura y se conserva siempre.</p>}
+  </div>;
+}
+
+function ExamDetail({ api, download, detail, setDetail, onBack, onDeleted }) {
   const [notes, setNotes] = useState(detail.notes ?? '');
+  const [tab, setTab] = useState('students');
   const [open, setOpen] = useState({});
   const [message, setMessage] = useState({ error: '', ok: '' });
   const reviews = detail.reviews ?? {};
@@ -84,18 +138,21 @@ function ExamDetail({ api, detail, setDetail, onBack, onDeleted }) {
     setDetail({ ...detail, reviews: { ...reviews, [studentId]: review } });
   });
   const remove = () => {
-    if (window.confirm(`¿Eliminar el registro de "${detail.examName}"? Esta acción no se puede deshacer.`)) guard(async () => { await api(`/api/professor/exams/${detail.sessionId}`, { method: 'DELETE' }); onDeleted(detail.sessionId); });
+    if (window.confirm(`¿Archivar "${detail.examName}"? Se oculta de tu lista, pero el registro y su historial se conservan.`)) guard(async () => { await api(`/api/professor/exams/${detail.sessionId}`, { method: 'DELETE' }); onDeleted(detail.sessionId); });
   };
+  const exportExcel = () => guard(() => download(`/api/professor/exams/${detail.sessionId}/report.xlsx`, `informe-${detail.examName}.xlsx`), 'Informe descargado.');
   const exportStudents = () => downloadCsv(`${detail.examName}-alumnos.csv`, [['Alumno', 'Correo', 'Ingreso', 'Estado', 'Alertas', 'Revisión', 'Nota'], ...(detail.students ?? []).map((student) => [student.name, student.email, formatDate(student.joinedAt), STUDENT_STATUS[student.status] ?? student.status, alertsOf(student.studentId).length, REVIEW_LABELS[reviews[student.studentId]?.status ?? ''], reviews[student.studentId]?.note ?? ''])]);
   const exportAlerts = () => downloadCsv(`${detail.examName}-alertas.csv`, [['Alumno', 'Hora', 'Tipo', 'Detalle'], ...(detail.alerts ?? []).map((alert) => [alert.studentName, formatDate(alert.timestamp), alertLabel(alert), alert.message])]);
 
   return <div className="exam-detail">
     <button className="row-action back-link" type="button" onClick={onBack}>← Volver a mis exámenes</button>
     <div className="admin-heading"><div><h1 className="detail-title">{detail.examName}</h1><p className="detail-meta">{formatDate(detail.createdAt)} · {detail.duration} min · <span className={`status-pill exam-${detail.status}`}>{EXAM_STATUS[detail.status]}</span></p></div>
-      <div className="detail-actions"><button className="button button-light" type="button" onClick={exportStudents}>Exportar alumnos <span>↓</span></button><button className="button button-light" type="button" onClick={exportAlerts}>Exportar alertas <span>↓</span></button></div></div>
-    <div className="metrics"><div><strong>{detail.students?.length ?? 0}</strong><span>alumnos</span></div><div><strong>{detail.alerts?.length ?? 0}</strong><span>alertas</span></div><div><strong>{Object.values(reviews).filter((review) => review.status === 'suspicious').length}</strong><span>sospechosos</span></div><div><strong>{detail.helpRequestCount ?? 0}</strong><span>ayudas pendientes al cierre</span></div></div>
+      <div className="detail-actions"><button className="button button-dark" type="button" onClick={exportExcel}>Informe Excel <span>↓</span></button><button className="button button-light" type="button" onClick={exportStudents}>Exportar alumnos <span>↓</span></button><button className="button button-light" type="button" onClick={exportAlerts}>Exportar alertas <span>↓</span></button></div></div>
+    <div className="metrics"><div><strong>{detail.students?.length ?? 0}</strong><span>alumnos</span></div><div><strong>{detail.alerts?.length ?? 0}</strong><span>alertas</span></div><div><strong>{Object.values(reviews).filter((review) => review.status === 'suspicious').length}</strong><span>sospechosos</span></div><div><strong>{detail.stats?.helpRequested ?? detail.helpRequestCount ?? 0}</strong><span>ayudas solicitadas</span></div>{detail.stats?.durationSeconds != null && <div><strong>{formatSeconds(detail.stats.durationSeconds)}</strong><span>duración real</span></div>}</div>
     {message.error && <p className="error-message">{message.error}</p>}{message.ok && <p className="notice-message">{message.ok}</p>}
-    <div className="admin-table-wrap"><table className="admin-table">
+    <div className="tabs" role="tablist">{[['students', 'Alumnos'], ['history', 'Historial']].map(([value, label]) => <button key={value} type="button" role="tab" aria-selected={tab === value} className={tab === value ? 'is-active' : ''} onClick={() => setTab(value)}>{label}</button>)}</div>
+    {tab === 'history' && <HistoryPanel api={api} detail={detail} />}
+    {tab === 'students' && <div className="admin-table-wrap"><table className="admin-table">
       <thead><tr><th>Alumno</th><th>Ingreso</th><th>Estado</th><th>Alertas</th><th>Revisión</th><th>Nota</th></tr></thead>
       <tbody>{(detail.students ?? []).map((student) => { const review = reviews[student.studentId] ?? {}; const alerts = alertsOf(student.studentId); return <Fragment key={student.studentId}>
         <tr>
@@ -108,13 +165,13 @@ function ExamDetail({ api, detail, setDetail, onBack, onDeleted }) {
         </tr>
         {open[student.studentId] && <tr className="alert-rows"><td colSpan={6}><ul>{alerts.map((alert) => <li key={alert.alertId}><span>{formatTime(alert.timestamp)}</span> <strong>{alertLabel(alert)}</strong> · {alert.message}</li>)}</ul></td></tr>}
       </Fragment>; })}</tbody>
-    </table>{!detail.students?.length && <p className="admin-empty">Nadie se conectó a este examen.</p>}</div>
+    </table>{!detail.students?.length && <p className="admin-empty">Nadie se conectó a este examen.</p>}</div>}
     <div className="notes-box"><label>Notas del examen<textarea rows={4} maxLength={4000} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Observaciones generales, incidentes, decisiones…" /></label><button className="button button-dark" type="button" onClick={saveNotes}>Guardar notas <span>→</span></button></div>
-    {detail.status === 'ended' && <button className="row-action danger-link" type="button" onClick={remove}>Eliminar este registro</button>}
+    {detail.status === 'ended' && <button className="row-action danger-link" type="button" onClick={remove}>Archivar este registro</button>}
   </div>;
 }
 
-export function ProfessorExamsView({ api }) {
+export function ProfessorExamsView({ api, download }) {
   const [list, setList] = useState(null);
   const [detail, setDetail] = useState(null);
   const [query, setQuery] = useState('');
@@ -123,7 +180,7 @@ export function ProfessorExamsView({ api }) {
   const open = (sessionId) => { setError(''); api(`/api/professor/exams/${sessionId}`).then(setDetail).catch((caught) => setError(caught.message)); };
   const back = () => { setDetail(null); api('/api/professor/exams').then(setList).catch(() => {}); };
 
-  if (detail) return <ExamDetail api={api} detail={detail} setDetail={setDetail} onBack={back} onDeleted={(id) => { setList((current) => current?.filter((exam) => exam.sessionId !== id)); setDetail(null); }} />;
+  if (detail) return <ExamDetail api={api} download={download} detail={detail} setDetail={setDetail} onBack={back} onDeleted={(id) => { setList((current) => current?.filter((exam) => exam.sessionId !== id)); setDetail(null); }} />;
   const needle = query.trim().toLowerCase();
   const visible = (list ?? []).filter((exam) => !needle || exam.examName.toLowerCase().includes(needle));
   return <div>

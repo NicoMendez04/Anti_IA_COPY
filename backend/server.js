@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { authFromToken, registerAccountRoutes, requireAuth } from './accounts.js';
-import { persistSession, registerRecordRoutes } from './records.js';
+import { logEvent, persistSession, registerRecordRoutes } from './records.js';
 
 const app = express();
 const server = http.createServer(app);
@@ -42,10 +42,14 @@ function publicSession(session) {
   };
 }
 
+const PRESENCE_ALERTS = new Set(['disconnected', 'reconnected', 'second_device']);
+
 function recordAlert(session, student, type, message) {
   const alert = { alertId: randomUUID(), studentId: student.studentId, studentName: student.name, type, timestamp: new Date().toISOString(), message };
   session.alerts.unshift(alert);
   io.to(session.sessionId).emit('alert:triggered', alert);
+  // Desconexión, reconexión y segundo dispositivo ya quedan como eventos de presencia.
+  if (!PRESENCE_ALERTS.has(type)) logEvent(session.sessionId, 'alert', { student, data: { alertType: type, message } });
   return alert;
 }
 
@@ -76,7 +80,7 @@ app.get('/api/health', (_req, res) => res.json({ ok: true }));
 registerAccountRoutes(app);
 registerRecordRoutes(app, sessions);
 
-app.post('/api/sessions', requireAuth('profesor'), async (req, res) => {
+app.post('/api/sessions', requireAuth('profesor', 'admin'), async (req, res) => {
   const { professorName, examName, duration = 60 } = req.body;
   if (!professorName?.trim() || !examName?.trim()) {
     return res.status(400).json({ message: 'El nombre del profesor y el examen son obligatorios.' });
@@ -100,11 +104,14 @@ app.post('/api/sessions', requireAuth('profesor'), async (req, res) => {
     students: new Map(),
     alerts: [],
     helpRequests: [],
+    helpTotal: 0,
+    helpResolvedTotal: 0,
     qrCode,
     qrData
   };
   sessions.set(sessionId, session);
   persistSession(session);
+  logEvent(sessionId, 'session_created', { actor: req.auth, data: { examName: session.examName, duration: session.duration } });
   res.status(201).json({ ...publicSession(session), qrCode, qrData });
 });
 
@@ -114,7 +121,7 @@ app.get('/api/sessions/:sessionId', (req, res) => {
   res.json({ ...publicSession(session), qrCode: session.qrCode, qrData: session.qrData });
 });
 
-app.delete('/api/sessions/:sessionId', requireAuth('profesor'), async (req, res) => {
+app.delete('/api/sessions/:sessionId', requireAuth('profesor', 'admin'), async (req, res) => {
   const session = sessions.get(req.params.sessionId);
   if (!session) return res.status(404).json({ message: 'Sesión no encontrada.' });
   if (session.professorEmail !== req.auth.email) return res.status(403).json({ message: 'No puedes finalizar una sesión que no creaste.' });
@@ -122,12 +129,13 @@ app.delete('/api/sessions/:sessionId', requireAuth('profesor'), async (req, res)
   session.endedAt = new Date().toISOString();
   io.to(session.sessionId).emit('session:ended', { reason: 'manual_close' });
   emitSession(session);
+  logEvent(session.sessionId, 'session_ended', { actor: req.auth, data: { reason: 'manual_close' } });
   await saveSessionLog(session);
   await persistSession(session);
   res.json({ success: true });
 });
 
-app.post('/api/sessions/:sessionId/expel/:studentId', requireAuth('profesor'), (req, res) => {
+app.post('/api/sessions/:sessionId/expel/:studentId', requireAuth('profesor', 'admin'), (req, res) => {
   const session = sessions.get(req.params.sessionId);
   if (!session) return res.status(404).json({ message: 'Sesión no encontrada.' });
   if (session.professorEmail !== req.auth.email) return res.status(403).json({ message: 'No autorizado.' });
@@ -138,10 +146,11 @@ app.post('/api/sessions/:sessionId/expel/:studentId', requireAuth('profesor'), (
   io.to(student.socketId).emit('student:expelled', { reason: 'expelled_by_professor' });
   emitSession(session);
   persistSession(session);
+  logEvent(session.sessionId, 'student_expelled', { actor: req.auth, student });
   res.json({ success: true });
 });
 
-function startSession(session) {
+function startSession(session, actor) {
   if (session.status !== 'waiting') return false;
   const startedAt = new Date();
   session.status = 'active';
@@ -149,6 +158,7 @@ function startSession(session) {
   session.endsAt = new Date(startedAt.getTime() + session.duration * 60_000).toISOString();
   emitSession(session);
   persistSession(session);
+  logEvent(session.sessionId, 'session_started', { actor, data: { endsAt: session.endsAt } });
   return true;
 }
 
@@ -160,6 +170,7 @@ setInterval(() => {
       session.endedAt = new Date().toISOString();
       io.to(session.sessionId).emit('session:ended', { reason: 'time_expired' });
       emitSession(session);
+      logEvent(session.sessionId, 'session_ended', { data: { reason: 'time_expired' } });
       saveSessionLog(session);
       persistSession(session);
     }
@@ -176,7 +187,7 @@ io.on('connection', (socket) => {
     const session = sessions.get(sessionId);
     if (!session) return socket.emit('session:error', { message: 'Sesión no encontrada.' });
     const auth = await authFromToken(token);
-    if (!auth || auth.role !== 'profesor' || auth.email !== session.professorEmail) {
+    if (!auth || !['profesor', 'admin'].includes(auth.role) || auth.email !== session.professorEmail) {
       return socket.emit('session:error', { message: 'No autorizado.' });
     }
     socket.join(sessionId);
@@ -187,10 +198,10 @@ io.on('connection', (socket) => {
     const session = sessions.get(sessionId);
     if (!session) return socket.emit('session:error', { message: 'Sesión no encontrada.' });
     const auth = await authFromToken(token);
-    if (!auth || auth.role !== 'profesor' || auth.email !== session.professorEmail) {
+    if (!auth || !['profesor', 'admin'].includes(auth.role) || auth.email !== session.professorEmail) {
       return socket.emit('session:error', { message: 'No autorizado.' });
     }
-    if (!startSession(session)) return socket.emit('session:error', { message: 'La sesión ya fue iniciada o finalizada.' });
+    if (!startSession(session, auth)) return socket.emit('session:error', { message: 'La sesión ya fue iniciada o finalizada.' });
   });
 
   socket.on('student:join', async ({ sessionId, name, token }) => {
@@ -212,9 +223,11 @@ io.on('connection', (socket) => {
         previous.emit('student:replaced');
         previous.disconnect(true);
         if (session.status === 'active') recordAlert(session, student, 'second_device', 'Abrió la sesión en otro dispositivo o pestaña');
-      } else if (student.status === 'offline' && session.status === 'active') {
+        logEvent(sessionId, 'student_replaced', { student, data: { sessionStatus: session.status } });
+      } else if (student.status === 'offline') {
         const away = Math.max(0, Math.round((Date.now() - Date.parse(student.leftAt ?? student.joinedAt)) / 1000));
-        recordAlert(session, student, 'reconnected', `Volvió a la sesión tras ${formatAway(away)} desconectado`);
+        if (session.status === 'active') recordAlert(session, student, 'reconnected', `Volvió a la sesión tras ${formatAway(away)} desconectado`);
+        logEvent(sessionId, 'student_reconnected', { student, data: { awaySeconds: away, sessionStatus: session.status } });
       }
       student.socketId = socket.id;
       student.status = 'active';
@@ -224,6 +237,7 @@ io.on('connection', (socket) => {
       const cleanName = String(name ?? '').trim() || auth.name || 'Estudiante';
       student = { studentId, uid: auth.uid, socketId: socket.id, name: cleanName, email: auth.email, joinedAt: new Date().toISOString(), leftAt: null, status: 'active' };
       session.students.set(studentId, student);
+      logEvent(sessionId, 'student_joined', { student, data: { sessionStatus: session.status } });
     }
 
     socket.data = { sessionId, studentId: student.studentId };
@@ -250,6 +264,8 @@ io.on('connection', (socket) => {
     if (session.helpRequests.some((request) => request.studentId === student.studentId)) return;
     const request = { requestId: randomUUID(), studentId: student.studentId, studentName: student.name, requestedAt: new Date().toISOString() };
     session.helpRequests.push(request);
+    session.helpTotal += 1;
+    logEvent(sessionId, 'help_requested', { student, data: { requestId: request.requestId } });
     io.to(sessionId).emit('help:requested', request);
     emitSession(session);
   });
@@ -261,6 +277,7 @@ io.on('connection', (socket) => {
     const hadRequest = session.helpRequests.some((request) => request.studentId === student.studentId);
     if (!hadRequest) return;
     session.helpRequests = session.helpRequests.filter((request) => request.studentId !== student.studentId);
+    logEvent(sessionId, 'help_cancelled', { student, data: { reason: 'student_cancelled' } });
     io.to(sessionId).emit('help:cancelled', { studentId: student.studentId });
     emitSession(session);
   });
@@ -269,7 +286,7 @@ io.on('connection', (socket) => {
     const session = sessions.get(sessionId);
     if (!session) return socket.emit('session:error', { message: 'Sesión no encontrada.' });
     const auth = await authFromToken(token);
-    if (!auth || auth.role !== 'profesor' || auth.email !== session.professorEmail) {
+    if (!auth || !['profesor', 'admin'].includes(auth.role) || auth.email !== session.professorEmail) {
       return socket.emit('session:error', { message: 'No autorizado.' });
     }
     const request = session.helpRequests.find((item) => item.requestId === requestId);
@@ -277,6 +294,8 @@ io.on('connection', (socket) => {
     session.helpRequests = session.helpRequests.filter((item) => item.requestId !== requestId);
     const student = session.students.get(request.studentId);
     if (student) io.to(student.socketId).emit('help:resolved', { requestId });
+    session.helpResolvedTotal += 1;
+    logEvent(sessionId, 'help_resolved', { actor: auth, student, data: { requestId, waitedSeconds: Math.round((Date.now() - Date.parse(request.requestedAt)) / 1000) } });
     emitSession(session);
   });
 
@@ -292,6 +311,7 @@ io.on('connection', (socket) => {
       student.status = 'offline';
       student.leftAt = new Date().toISOString();
       if (session.status === 'active') recordAlert(session, student, 'disconnected', 'Se desconectó de la sesión (cerró la pestaña, apagó el equipo o perdió la conexión)');
+      logEvent(sessionId, 'student_left', { student, data: { sessionStatus: session.status } });
       io.to(sessionId).emit('student:left', student);
       changed = true;
     }

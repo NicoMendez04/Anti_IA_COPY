@@ -17,7 +17,7 @@ function Layout({ children }) {
   return <main className="app-shell"><header className="topbar"><Brand /><span className="topbar-status"><i /> Sistema operativo</span></header>{children}</main>;
 }
 
-async function fetchProfile(token, role) {
+async function fetchProfile(token, role = '') {
   const response = await fetch(`${API_URL}/api/auth/me?role=${role}`, { headers: { Authorization: `Bearer ${token}` } });
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
@@ -26,22 +26,32 @@ async function fetchProfile(token, role) {
   return response.json();
 }
 
+const AUTH_KEY = 'vigia_auth';
+const readCachedAuth = () => { try { return JSON.parse(localStorage.getItem(AUTH_KEY)); } catch { return null; } };
+
+// Primera pantalla tras entrar: quien aún no completó su perfil empieza por ahí.
+function homeFor(auth) {
+  if (auth.role === 'admin') return '/admin';
+  const area = auth.role === 'profesor' ? 'professor' : 'student';
+  return auth.onboarded ? `/${area}` : `/${area}/profile`;
+}
+
 function useAuth(role) {
-  const storageKey = `vigia_auth_${role}`;
-  const [auth, setAuth] = useState(() => { try { return JSON.parse(localStorage.getItem(storageKey)); } catch { return null; } });
-  const clear = () => { setAuth(null); localStorage.removeItem(storageKey); };
-  const save = (next) => { setAuth((current) => (current && current.token === next.token ? current : next)); localStorage.setItem(storageKey, JSON.stringify(next)); };
+  const [session, setSession] = useState(readCachedAuth);
+  const clear = () => { setSession(null); localStorage.removeItem(AUTH_KEY); };
+  const save = (next) => { setSession((current) => (current && current.token === next.token && current.onboarded === next.onboarded ? current : next)); localStorage.setItem(AUTH_KEY, JSON.stringify(next)); };
   useEffect(() => onIdTokenChanged(firebaseAuth, async (user) => {
     if (!user) return clear();
     try {
       const token = await user.getIdToken();
-      const profile = await fetchProfile(token, role);
-      if (profile.status !== 'approved' || profile.role !== role) return clear();
-      save({ token, email: profile.email, role: profile.role, name: profile.name });
+      const profile = await fetchProfile(token);
+      if (profile.status !== 'approved') return clear();
+      save({ token, email: profile.email, role: profile.role, name: profile.name, onboarded: profile.onboarded });
     } catch (caught) { if (caught.status === 401 || caught.status === 403) clear(); }
   }), []);
   async function logout() { await signOut(firebaseAuth); clear(); }
-  return { auth, login: save, logout };
+  const auth = session && (!role || session.role === role || (role === 'profesor' && session.role === 'admin')) ? session : null;
+  return { auth, session, login: save, logout };
 }
 
 const ACCESS_LABELS = { profesor: 'ACCESO DE PROFESOR', estudiante: 'ACCESO DE ESTUDIANTE', admin: 'ADMINISTRACIÓN' };
@@ -53,10 +63,15 @@ const AUTH_ERRORS = {
   'auth/too-many-requests': 'Demasiados intentos. Espera unos minutos e inténtalo de nuevo.',
   'auth/network-request-failed': 'Sin conexión con el servidor. Revisa tu red.',
   'auth/unauthorized-domain': 'Este sitio no está autorizado en Firebase. Agrégalo en Authentication → Settings → Authorized domains.',
-  'auth/popup-blocked': 'El navegador bloqueó la ventana de Microsoft. Permite las ventanas emergentes e inténtalo de nuevo.',
-  'auth/account-exists-with-different-credential': 'Ese correo ya tiene una cuenta con contraseña. Usa "correo y contraseña".'
+  'auth/popup-blocked': 'El navegador bloqueó la ventana de acceso. Permite las ventanas emergentes e inténtalo de nuevo.',
+  'auth/account-exists-with-different-credential': 'Ese correo ya tiene una cuenta con contraseña. Entra con correo y contraseña.'
 };
 const IGNORED_AUTH_ERRORS = ['auth/popup-closed-by-user', 'auth/cancelled-popup-request'];
+const REJECTIONS = {
+  pending: 'Tu solicitud sigue pendiente: un administrador aún debe aprobarla.',
+  rejected: 'Tu solicitud de acceso fue rechazada. Contacta a un administrador.',
+  disabled: 'Tu cuenta está desactivada. Contacta a un administrador.'
+};
 
 const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
@@ -64,51 +79,92 @@ const MICROSOFT_ENABLED = import.meta.env.VITE_ENABLE_MICROSOFT === 'true';
 const microsoftProvider = new OAuthProvider('microsoft.com');
 microsoftProvider.setCustomParameters({ prompt: 'select_account', ...(import.meta.env.VITE_MS_TENANT ? { tenant: import.meta.env.VITE_MS_TENANT } : {}) });
 
+// Ejecuta un inicio de sesión y traduce cualquier fallo a un mensaje para el usuario.
+async function attempt(action, setError, setLoading) {
+  setError(''); setLoading(true);
+  try { await action(); } catch (caught) {
+    if (IGNORED_AUTH_ERRORS.includes(caught.code)) return;
+    if (caught.status) await signOut(firebaseAuth).catch(() => {});
+    setError(AUTH_ERRORS[caught.code] || caught.message || 'No se pudo iniciar sesión.');
+  } finally { setLoading(false); }
+}
+
+function ProviderButtons({ loading, onProvider, label = 'Entrar' }) {
+  return <>
+    <button className="button button-light" type="button" disabled={loading} onClick={() => onProvider(googleProvider)}>{label} con Google <span>↗</span></button>
+    {MICROSOFT_ENABLED && <button className="button button-light" type="button" disabled={loading} onClick={() => onProvider(microsoftProvider)}>{label} con Microsoft <span>↗</span></button>}
+  </>;
+}
+
 function LoginForm({ role, onAuthenticated }) {
-  const canRegister = role !== 'admin';
-  const [mode, setMode] = useState('login');
-  const [name, setName] = useState(''); const [email, setEmail] = useState(''); const [password, setPassword] = useState('');
-  const [error, setError] = useState(''); const [notice, setNotice] = useState(''); const [loading, setLoading] = useState(false);
-  const registering = mode === 'register';
-  function switchMode() { setMode(registering ? 'login' : 'register'); setError(''); setNotice(''); }
+  const [email, setEmail] = useState(''); const [password, setPassword] = useState('');
+  const [error, setError] = useState(''); const [loading, setLoading] = useState(false);
   async function signInAs(signIn) {
     const credential = await signIn();
     const token = await credential.user.getIdToken();
-    const profile = await fetchProfile(token, role);
-    const rejection = profile.status === 'pending' ? 'Tu cuenta está pendiente de aprobación por un administrador.'
-      : profile.status === 'disabled' ? 'Tu cuenta está desactivada. Contacta a un administrador.'
-      : profile.role !== role ? `Esta cuenta no tiene acceso como ${role}.` : null;
+    const profile = await fetchProfile(token);
+    const rejection = REJECTIONS[profile.status] ?? (role && profile.role !== role && !(role === 'profesor' && profile.role === 'admin') ? `Esta cuenta no tiene acceso como ${role}.` : null);
     if (rejection) { await signOut(firebaseAuth); throw new Error(rejection); }
-    onAuthenticated({ token, email: profile.email, role: profile.role, name: profile.name });
+    onAuthenticated({ token, email: profile.email, role: profile.role, name: profile.name, onboarded: profile.onboarded });
   }
-  async function run(action) {
-    setError(''); setNotice(''); setLoading(true);
-    try { await action(); } catch (caught) {
-      if (IGNORED_AUTH_ERRORS.includes(caught.code)) return;
-      if (caught.status) await signOut(firebaseAuth).catch(() => {});
-      setError(AUTH_ERRORS[caught.code] || caught.message || 'No se pudo iniciar sesión.');
-    } finally { setLoading(false); }
-  }
-  const submit = (event) => {
+  const submit = (event) => { event.preventDefault(); attempt(() => signInAs(() => signInWithEmailAndPassword(firebaseAuth, email, password)), setError, setLoading); };
+  return <section className="setup-page"><div className="page-kicker">{role ? ACCESS_LABELS[role] : 'INICIAR SESIÓN'} <span>01</span></div><div className="setup-grid"><div><h1>Inicia con tu<br /><em>correo institucional.</em></h1><p className="lede">Ingresa con tu correo institucional y tu contraseña, o con Google.</p></div><form className="session-form" onSubmit={submit}>
+    <label>Correo institucional<input autoFocus required type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="nombre@institucion.edu" /></label>
+    <label>Contraseña<input required type="password" minLength={6} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Tu contraseña" /></label>
+    {error && <p className="error-message">{error}</p>}
+    <button className="button button-dark" type="submit" disabled={loading}>{loading ? 'Verificando…' : 'Continuar'} <span>→</span></button>
+    {role !== 'admin' && <ProviderButtons loading={loading} onProvider={(provider) => attempt(() => signInAs(() => signInWithPopup(firebaseAuth, provider)), setError, setLoading)} />}
+    {role !== 'admin' && <Link className="row-action switch-mode" to="/register">¿No tienes cuenta? Solicita acceso</Link>}
+  </form></div></section>;
+}
+
+const ROLE_CHOICES = [['profesor', 'Soy profesor', 'Crea sesiones de evaluación, supervisa a tu curso en vivo y revisa los registros.'], ['estudiante', 'Soy estudiante', 'Únete a los exámenes con un QR y consulta tu historial de evaluaciones.']];
+
+function RegisterPage() {
+  const [role, setRole] = useState('');
+  const [form, setForm] = useState({ name: '', email: '', password: '', requestNote: '' });
+  const [error, setError] = useState(''); const [loading, setLoading] = useState(false); const [sent, setSent] = useState(false);
+  const set = (field) => (event) => setForm({ ...form, [field]: event.target.value });
+  const needRole = () => { if (!role) throw new Error('Elige a qué rol postulas.'); };
+  const byPassword = (event) => {
     event.preventDefault();
-    run(async () => {
-      if (!registering) return signInAs(() => signInWithEmailAndPassword(firebaseAuth, email, password));
-      const response = await fetch(`${API_URL}/api/auth/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, email, password, role }) });
+    attempt(async () => {
+      needRole();
+      const response = await fetch(`${API_URL}/api/auth/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...form, role }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.message);
-      setNotice(data.message); setMode('login'); setPassword('');
-    });
+      setSent(true);
+    }, setError, setLoading);
   };
-  return <section className="setup-page"><div className="page-kicker">{ACCESS_LABELS[role]} <span>01</span></div><div className="setup-grid"><div><h1>{registering ? <>Solicita tu<br /><em>cuenta.</em></> : <>Inicia con tu<br /><em>correo institucional.</em></>}</h1><p className="lede">{registering ? 'Crea tu cuenta con tu correo institucional. Un administrador debe aprobarla antes de que puedas entrar.' : 'Ingresa con tu correo institucional y tu contraseña.'}</p></div><form className="session-form" onSubmit={submit}>
-    {registering && <label>Nombre completo<input required value={name} onChange={(e) => setName(e.target.value)} placeholder="Ej. Ana García" /></label>}
-    <label>Correo institucional<input autoFocus required type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="nombre@institucion.edu" /></label>
-    <label>Contraseña<input required type="password" minLength={registering ? 8 : 6} value={password} onChange={(e) => setPassword(e.target.value)} placeholder={registering ? 'Mínimo 8 caracteres' : 'Tu contraseña'} /></label>
-    {notice && <p className="notice-message">{notice}</p>}{error && <p className="error-message">{error}</p>}
-    <button className="button button-dark" type="submit" disabled={loading}>{loading ? 'Verificando…' : registering ? 'Solicitar cuenta' : 'Continuar'} <span>→</span></button>
-    {canRegister && !registering && <button className="button button-light" type="button" disabled={loading} onClick={() => run(() => signInAs(() => signInWithPopup(firebaseAuth, googleProvider)))}>Entrar con Google <span>↗</span></button>}
-    {canRegister && MICROSOFT_ENABLED && !registering && <button className="button button-light" type="button" disabled={loading} onClick={() => run(() => signInAs(() => signInWithPopup(firebaseAuth, microsoftProvider)))}>Entrar con Microsoft <span>↗</span></button>}
-    {canRegister && <button className="row-action switch-mode" type="button" onClick={switchMode}>{registering ? '¿Ya tienes cuenta? Inicia sesión' : '¿No tienes cuenta? Solicítala'}</button>}
-  </form></div></section>;
+  const byProvider = (provider) => attempt(async () => {
+    needRole();
+    const credential = await signInWithPopup(firebaseAuth, provider);
+    const token = await credential.user.getIdToken();
+    try { await request(token, '/api/auth/request', { method: 'POST', body: JSON.stringify({ role, name: form.name, requestNote: form.requestNote }) }); }
+    finally { await signOut(firebaseAuth).catch(() => {}); }
+    setSent(true);
+  }, setError, setLoading);
+
+  if (sent) return <Layout><section className="setup-page"><div className="page-kicker">SOLICITUD DE ACCESO <span>✓</span></div><div className="setup-grid"><div><h1>Solicitud<br /><em>enviada.</em></h1><p className="lede">Un administrador revisará tu solicitud como <strong>{role === 'profesor' ? 'profesor' : 'estudiante'}</strong>. Cuando la apruebe podrás iniciar sesión, y tu primera pantalla será tu perfil.</p></div><div className="session-form"><Link className="button button-dark" to="/login">Ir a iniciar sesión <span>→</span></Link><Link className="button button-light" to="/">Volver al inicio <span>↗</span></Link></div></div></section></Layout>;
+  return <Layout><section className="setup-page"><div className="page-kicker">SOLICITAR ACCESO <span>01</span></div><div className="setup-grid"><div><h1>Solicita<br /><em>tu cuenta.</em></h1><p className="lede">Cuéntanos quién eres y a qué rol postulas. Un administrador revisará tu solicitud y, si la aprueba, crearemos tu perfil.</p></div><form className="session-form" onSubmit={byPassword}>
+    <div className="role-choices" role="radiogroup" aria-label="Rol al que postulas">{ROLE_CHOICES.map(([value, title, text]) => <button key={value} type="button" role="radio" aria-checked={role === value} className={role === value ? 'is-active' : ''} onClick={() => setRole(value)}><strong>{title}</strong><span>{text}</span></button>)}</div>
+    <label>Nombre completo<input required value={form.name} onChange={set('name')} placeholder="Ej. Ana García" /></label>
+    <label>Correo institucional<input required type="email" value={form.email} onChange={set('email')} placeholder="nombre@institucion.edu" /></label>
+    <label>Contraseña<input required type="password" minLength={8} value={form.password} onChange={set('password')} placeholder="Mínimo 8 caracteres" /></label>
+    <label>Mensaje para el administrador <em className="optional">(opcional)</em><textarea rows={3} maxLength={500} value={form.requestNote} onChange={set('requestNote')} placeholder="Ej. Profesor de Álgebra, Facultad de Ingeniería" /></label>
+    {error && <p className="error-message">{error}</p>}
+    <button className="button button-dark" type="submit" disabled={loading}>{loading ? 'Enviando…' : 'Enviar solicitud'} <span>→</span></button>
+    <p className="or-divider"><span>o solicita con</span></p>
+    <ProviderButtons loading={loading} label="Solicitar" onProvider={byProvider} />
+    <Link className="row-action switch-mode" to="/login">¿Ya tienes cuenta? Inicia sesión</Link>
+  </form></div></section></Layout>;
+}
+
+function LoginPage() {
+  const { session, login } = useAuth();
+  const navigate = useNavigate();
+  useEffect(() => { if (session) navigate(homeFor(session), { replace: true }); }, [session]);
+  return <Layout><LoginForm onAuthenticated={(next) => { login(next); navigate(homeFor(next), { replace: true }); }} /></Layout>;
 }
 
 async function request(token, path, options = {}) {
@@ -120,17 +176,49 @@ async function request(token, path, options = {}) {
 
 function RoleArea({ role, view }) {
   const { auth, login, logout } = useAuth(role);
+  const navigate = useNavigate();
   const [profile, setProfile] = useState(null);
   const api = (path, options) => request(auth.token, path, options);
+  const download = async (path, filename) => {
+    const response = await fetch(`${API_URL}${path}`, { headers: { Authorization: `Bearer ${auth.token}` } });
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).message || 'No se pudo descargar el archivo.');
+    const link = Object.assign(document.createElement('a'), { href: URL.createObjectURL(await response.blob()), download: filename });
+    link.click();
+    URL.revokeObjectURL(link.href);
+  };
   useEffect(() => { if (auth) api('/api/me/profile').then(setProfile).catch(() => {}); }, [Boolean(auth)]);
   if (!auth) return <Layout><LoginForm role={role} onAuthenticated={login} /></Layout>;
-  return <Layout><AreaNav role={role} profile={profile} onLogout={logout} /><section className="area-page">
-    {view === 'profile' ? <ProfileView api={api} role={role} profile={profile} onSaved={setProfile} /> : role === 'profesor' ? <ProfessorExamsView api={api} /> : <StudentExamsView api={api} />}
+  return <Layout><AreaNav role={role} profile={profile} onLogout={logout} admin={auth.role === 'admin'} /><section className="area-page">
+    {view === 'profile' ? <ProfileView api={api} role={role} profile={profile} onSaved={(saved) => { const firstTime = profile && !profile.onboarded; setProfile(saved); if (firstTime) navigate(homeFor({ role, onboarded: true })); }} /> : role === 'profesor' ? <ProfessorExamsView api={api} download={download} /> : <StudentExamsView api={api} />}
   </section></Layout>;
 }
 
+const FEATURES = [
+  ['01', 'Sesiones con QR', 'Crea un examen, comparte el código QR y tus alumnos entran desde su celular en segundos.'],
+  ['02', 'Supervisión en vivo', 'Ve quién está conectado y recibe alertas cuando alguien cambia de pestaña, bloquea la pantalla o se desconecta.'],
+  ['03', 'Dudas sin interrumpir', 'Los alumnos levantan la mano desde su pantalla y tú los atiendes desde tu panel.'],
+  ['04', 'Registros y revisión', 'Cada examen queda guardado: revisa alumno por alumno, agrega notas y exporta los resultados.'],
+  ['05', 'Perfiles y accesos', 'Cada persona tiene su perfil. Un administrador aprueba quién entra como profesor o como estudiante.']
+];
+const STEPS = [
+  ['Solicita acceso', 'Elige si postulas como profesor o estudiante y cuéntanos quién eres.'],
+  ['Un administrador te aprueba', 'Revisa tu solicitud y te asigna el rol y los permisos.'],
+  ['Completa tu perfil', 'Al entrar por primera vez, tu perfil es lo primero que ves. Después, comienza a usar Vigía.']
+];
+
 function Landing() {
-  return <Layout><section className="landing"><div className="eyebrow">CONTROL DE EVALUACIONES / 01</div><h1>Exámenes con<br /><em>presencia real.</em></h1><p className="lede">Una sala digital para crear, supervisar y cerrar tus sesiones de evaluación con claridad.</p><div className="landing-actions"><Link className="button button-dark" to="/professor">Crear una sesión <span>→</span></Link><Link className="button button-light" to="/student">Entrar como estudiante <span>↗</span></Link></div><div className="landing-note"><span className="note-line" /> <span>Sesiones temporales · datos en memoria · <Link className="admin-link" to="/admin">Administración</Link></span></div></section><aside className="landing-aside"><div className="signal-card"><div className="signal-top"><span>LIVE / VIGILANCIA</span><span className="signal-pulse" /></div><div className="signal-grid"><strong>24</strong><span>estudiantes<br />conectados</span></div><div className="mini-bars"><i /><i /><i /><i /><i /><i /><i /></div></div><p>El aula como un espacio de confianza, con señales visibles cuando algo cambia.</p></aside></Layout>;
+  const { session } = useAuth();
+  return <Layout>
+    <section className="landing"><div className="eyebrow">CONTROL DE EVALUACIONES / 01</div><h1>Exámenes con<br /><em>presencia real.</em></h1><p className="lede">Vigía es una sala digital para crear, supervisar y cerrar sesiones de evaluación con claridad: el profesor ve en vivo lo que ocurre, y cada examen queda registrado.</p>
+      <div className="landing-actions">{session
+        ? <Link className="button button-dark" to={homeFor(session)}>Ir a mi panel <span>→</span></Link>
+        : <><Link className="button button-dark" to="/register">Solicitar acceso <span>→</span></Link><Link className="button button-light" to="/login">Iniciar sesión <span>↗</span></Link></>}</div>
+      <div className="landing-note"><span className="note-line" /> <span>Acceso por aprobación · <Link className="admin-link" to="/admin">Administración</Link></span></div></section>
+    <aside className="landing-aside"><div className="signal-card"><div className="signal-top"><span>LIVE / VIGILANCIA</span><span className="signal-pulse" /></div><div className="signal-grid"><strong>24</strong><span>estudiantes<br />conectados</span></div><div className="mini-bars"><i /><i /><i /><i /><i /><i /><i /></div></div><p>El aula como un espacio de confianza, con señales visibles cuando algo cambia.</p></aside>
+    <section className="portal-section"><div className="page-kicker">QUÉ HACE VIGÍA <span>02</span></div><div className="feature-grid">{FEATURES.map(([number, title, text]) => <article key={number}><span>{number}</span><h3>{title}</h3><p>{text}</p></article>)}</div></section>
+    <section className="portal-section"><div className="page-kicker">CÓMO EMPEZAR <span>03</span></div><ol className="steps">{STEPS.map(([title, text], index) => <li key={title}><strong>{index + 1}</strong><div><h3>{title}</h3><p>{text}</p></div></li>)}</ol>
+      {!session && <div className="portal-cta"><p>¿Cómo quieres registrarte?</p><div className="landing-actions"><Link className="button button-dark" to="/register">Solicitar acceso <span>→</span></Link><Link className="button button-light" to="/login">Ya tengo cuenta <span>↗</span></Link></div></div>}</section>
+  </Layout>;
 }
 
 function ProfessorDashboard() {
@@ -208,7 +296,7 @@ function ProfessorDashboard() {
 
   if (!auth) return <Layout><LoginForm role="profesor" onAuthenticated={login} /></Layout>;
 
-  if (!session) return <Layout><AreaNav role="profesor" /><section className="setup-page"><div className="page-kicker">PANEL DEL PROFESOR <span>01</span></div><div className="setup-grid"><div><h1>Abre una nueva<br /><em>sesión.</em></h1><p className="lede">Configura el espacio de evaluación y comparte el acceso con tu clase.</p><div className="landing-note"><span className="note-line" /> <span>{auth.email} · <button className="row-action" type="button" onClick={logout}>Cerrar sesión</button></span></div></div><form className="session-form" onSubmit={createSession}><label>Tu nombre<input required value={form.professorName} onChange={(e) => setForm({ ...form, professorName: e.target.value })} placeholder="Ej. Ana García" /></label><label>Nombre del examen<input required value={form.examName} onChange={(e) => setForm({ ...form, examName: e.target.value })} placeholder="Ej. Álgebra · Unidad 2" /></label><label>Duración <span className="label-help">MINUTOS</span><input type="number" min="5" max="240" value={form.duration} onChange={(e) => setForm({ ...form, duration: e.target.value })} /></label>{error && <p className="error-message">{error}</p>}<button className="button button-dark" type="submit">Generar sesión <span>→</span></button></form></div></section></Layout>;
+  if (!session) return <Layout><AreaNav role="profesor" admin={auth.role === 'admin'} /><section className="setup-page"><div className="page-kicker">PANEL DEL PROFESOR <span>01</span></div><div className="setup-grid"><div><h1>Abre una nueva<br /><em>sesión.</em></h1><p className="lede">Configura el espacio de evaluación y comparte el acceso con tu clase.</p><div className="landing-note"><span className="note-line" /> <span>{auth.email} · <button className="row-action" type="button" onClick={logout}>Cerrar sesión</button></span></div></div><form className="session-form" onSubmit={createSession}><label>Tu nombre<input required value={form.professorName} onChange={(e) => setForm({ ...form, professorName: e.target.value })} placeholder="Ej. Ana García" /></label><label>Nombre del examen<input required value={form.examName} onChange={(e) => setForm({ ...form, examName: e.target.value })} placeholder="Ej. Álgebra · Unidad 2" /></label><label>Duración <span className="label-help">MINUTOS</span><input type="number" min="5" max="240" value={form.duration} onChange={(e) => setForm({ ...form, duration: e.target.value })} /></label>{error && <p className="error-message">{error}</p>}<button className="button button-dark" type="submit">Generar sesión <span>→</span></button></form></div></section></Layout>;
 
   const activeStudents = session.students?.filter((student) => student.status === 'active') || [];
   if (session.status === 'ended') return <SessionSummary session={session} />;
@@ -253,9 +341,9 @@ function StudentLive() { const { sessionId } = useParams(); const navigate = use
   return <div className="live-shell"><header className="live-header"><Brand /><span className="secure-label"><i /> Sesión protegida</span></header><section className="live-content"><div className="live-kicker">{session?.examName || 'Sesión de evaluación'} <span>· {waiting ? 'ESPERANDO INICIO' : 'EN CURSO'}</span></div><h1>Hola, {name.split(' ')[0]}.</h1><p className="live-intro">{waiting ? 'El profesor aún no ha iniciado la evaluación. Permanece en esta pantalla.' : 'Esta pantalla permanece activa mientras realizas tu evaluación.'}</p><div className="timer-card"><span>{waiting ? 'TIEMPO PENDIENTE' : 'TIEMPO RESTANTE'}</span><strong>{formatted}</strong><div className="timer-track"><i style={{ width: session?.status === 'active' ? `${Math.max(0, Math.min(100, (remainingSeconds / (session.duration * 60)) * 100))}%` : '0%' }} /></div></div><div className="live-stats"><div><strong>{session?.students?.filter((s) => s.status === 'active').length || 1}</strong><span>compañeros<br />presentes</span></div><div><strong>{alertCount}</strong><span>eventos<br />registrados</span></div></div><div className="live-notice"><span>◉</span><p><strong>{waiting ? 'Conectado correctamente.' : 'Tu sesión está siendo supervisada.'}</strong><br />{waiting ? 'Recibirás el inicio en esta misma pantalla.' : 'Permanece en esta pestaña hasta entregar tu evaluación.'}</p></div><button className="sound-toggle" onClick={enableSound}>{soundEnabled ? 'Sonido activado' : 'Activar sonido de alertas'}</button></section><button className={`help-button${helpStatus === 'pending' ? ' help-button-pending' : ''}`} type="button" onClick={helpStatus === 'pending' ? cancelHelp : requestHelp}>{helpStatus === 'pending' ? 'Esperando al profesor… (cancelar)' : '✋ Tengo una duda'}</button></div>;
 }
 
-const STATUS_LABELS = { pending: 'Pendiente', approved: 'Aprobado', disabled: 'Desactivado' };
+const STATUS_LABELS = { pending: 'Pendiente', approved: 'Aprobado', rejected: 'Rechazada', disabled: 'Desactivado' };
 const ROLE_LABELS = { admin: 'Administrador', profesor: 'Profesor', estudiante: 'Estudiante' };
-const STATUS_FILTERS = [['all', 'Todos'], ['pending', 'Pendientes'], ['approved', 'Aprobados'], ['disabled', 'Desactivados']];
+const STATUS_FILTERS = [['all', 'Todos'], ['pending', 'Solicitudes'], ['approved', 'Aprobados'], ['rejected', 'Rechazadas'], ['disabled', 'Desactivados']];
 const EMPTY_USER = { name: '', email: '', password: '', role: 'profesor' };
 
 function AdminPanel() {
@@ -299,13 +387,13 @@ function AdminPanel() {
 
   const pending = users.filter((user) => user.status === 'pending').length;
   const needle = query.trim().toLowerCase();
-  const statusOrder = { pending: 0, approved: 1, disabled: 2 };
+  const statusOrder = { pending: 0, approved: 1, rejected: 2, disabled: 3 };
   const visible = users.filter((user) => (filter === 'all' || user.status === filter) && (!needle || `${user.name} ${user.email}`.toLowerCase().includes(needle))).sort((a, b) => statusOrder[a.status] - statusOrder[b.status]);
 
   return <Layout><section className="admin-page">
     <div className="page-kicker">ADMINISTRACIÓN DE CUENTAS <span>{users.length}</span></div>
-    <div className="admin-heading"><h1>Gestión de<br /><em>usuarios.</em></h1><div className="landing-note"><span className="note-line" /> <span>{auth.email} · <button className="row-action" type="button" onClick={logout}>Cerrar sesión</button></span></div></div>
-    {pending > 0 && <p className="notice-message">{pending} {pending === 1 ? 'cuenta espera' : 'cuentas esperan'} aprobación.</p>}
+    <div className="admin-heading"><h1>Gestión de<br /><em>usuarios.</em></h1><div className="landing-note"><span className="note-line" /> <span>{auth.email} · <Link className="admin-link" to="/professor">Modo profesor</Link> · <button className="row-action" type="button" onClick={logout}>Cerrar sesión</button></span></div></div>
+    {pending > 0 && <p className="notice-message">{pending} {pending === 1 ? 'solicitud espera' : 'solicitudes esperan'} tu revisión.</p>}
     {error && <p className="error-message">{error}</p>}
     <div className="admin-toolbar">
       <input className="admin-search" type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Buscar por nombre o correo" />
@@ -322,11 +410,12 @@ function AdminPanel() {
     <div className="admin-table-wrap"><table className="admin-table">
       <thead><tr><th>Usuario</th><th>Rol</th><th>Estado</th><th>Acciones</th></tr></thead>
       <tbody>{visible.map((user) => { const self = user.uid === auth.uid || user.email === auth.email; return <tr key={user.uid}>
-        <td><strong>{user.name || '—'}</strong><span>{user.email}</span></td>
-        <td><select value={user.role} disabled={self} onChange={(e) => patch(user, { role: e.target.value })}>{Object.entries(ROLE_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></td>
+        <td><strong>{user.name || '—'}</strong><span>{user.email}</span>{user.requestNote && <em className="request-note">“{user.requestNote}”</em>}</td>
+        <td>{user.status === 'pending' && <small className="request-hint">Solicita ser</small>}<select value={user.role} disabled={self} onChange={(e) => patch(user, { role: e.target.value })}>{Object.entries(ROLE_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></td>
         <td><span className={`status-pill status-${user.status}`}>{STATUS_LABELS[user.status]}</span></td>
         <td className="admin-actions">
-          {user.status !== 'approved' && <button type="button" onClick={() => patch(user, { status: 'approved' })}>{user.status === 'pending' ? 'Aprobar' : 'Activar'}</button>}
+          {user.status !== 'approved' && <button type="button" onClick={() => patch(user, { status: 'approved' })}>{user.status === 'disabled' ? 'Activar' : 'Aprobar'}</button>}
+          {user.status === 'pending' && <button type="button" className="danger" onClick={() => patch(user, { status: 'rejected' })}>Rechazar</button>}
           {user.status === 'approved' && !self && <button type="button" onClick={() => patch(user, { status: 'disabled' })}>Desactivar</button>}
           <button type="button" onClick={() => patch(user, { name: window.prompt('Nombre:', user.name) ?? user.name })}>Renombrar</button>
           <button type="button" onClick={() => resetPassword(user)}>Contraseña</button>
@@ -337,4 +426,4 @@ function AdminPanel() {
   </section></Layout>;
 }
 
-export default function App() { return <Routes><Route path="/" element={<Landing />} /><Route path="/professor" element={<ProfessorDashboard />} /><Route path="/professor/exams" element={<RoleArea role="profesor" view="exams" />} /><Route path="/professor/profile" element={<RoleArea role="profesor" view="profile" />} /><Route path="/student/exams" element={<RoleArea role="estudiante" view="exams" />} /><Route path="/student/profile" element={<RoleArea role="estudiante" view="profile" />} /><Route path="/admin" element={<AdminPanel />} /><Route path="/student" element={<StudentEntry />} /><Route path="/student/:sessionId" element={<StudentEntry />} /><Route path="/student/:sessionId/live" element={<StudentLive />} /></Routes>; }
+export default function App() { return <Routes><Route path="/" element={<Landing />} /><Route path="/login" element={<LoginPage />} /><Route path="/register" element={<RegisterPage />} /><Route path="/professor" element={<ProfessorDashboard />} /><Route path="/professor/exams" element={<RoleArea role="profesor" view="exams" />} /><Route path="/professor/profile" element={<RoleArea role="profesor" view="profile" />} /><Route path="/student/exams" element={<RoleArea role="estudiante" view="exams" />} /><Route path="/student/profile" element={<RoleArea role="estudiante" view="profile" />} /><Route path="/admin" element={<AdminPanel />} /><Route path="/student" element={<StudentEntry />} /><Route path="/student/:sessionId" element={<StudentEntry />} /><Route path="/student/:sessionId/live" element={<StudentLive />} /></Routes>; }
