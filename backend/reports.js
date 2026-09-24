@@ -6,14 +6,14 @@ const DATE_FORMAT = 'dd-mm-yyyy hh:mm:ss';
 const REVIEW_LABELS = { '': 'Sin revisar', clear: 'Sin observaciones', suspicious: 'Sospechoso', annulled: 'Anulado' };
 const EXAM_STATUS = { waiting: 'En espera', active: 'En curso', ended: 'Finalizado' };
 const STUDENT_STATUS = { active: 'Conectado', offline: 'Desconectado', expelled: 'Expulsado' };
-const ALERT_LABELS = { tab_switch: 'Cambio de pestaña', window_blur: 'Pérdida de foco', screen_lock: 'Pantalla oculta o bloqueada', disconnected: 'Desconexión', reconnected: 'Reconexión', second_device: 'Otro dispositivo', copy: 'Copiar', cut: 'Cortar', paste: 'Pegar', context_menu: 'Menú contextual', print: 'Imprimir', screenshot_key: 'Captura de pantalla', shortcut: 'Atajo de teclado', returned: 'Volvió a la pantalla', orientation_change: 'Giro de pantalla', idle: 'Sin interacción', other: 'Otra actividad' };
+const ALERT_LABELS = { tab_switch: 'Cambio de pestaña', window_blur: 'Pérdida de foco', screen_lock: 'Pantalla oculta o bloqueada', disconnected: 'Desconexión', reconnected: 'Reconexión', second_device: 'Otro dispositivo', auto_expelled: 'Expulsión automática', copy: 'Copiar', cut: 'Cortar', paste: 'Pegar', context_menu: 'Menú contextual', print: 'Imprimir', screenshot_key: 'Captura de pantalla', shortcut: 'Atajo de teclado', returned: 'Volvió a la pantalla', orientation_change: 'Giro de pantalla', idle: 'Sin interacción', other: 'Otra actividad' };
 const SEVERITY_LABELS = { info: 'Informativa', warning: 'Advertencia', critical: 'Crítica' };
 const CATEGORY_LABELS = { session: 'Sesión', presence: 'Presencia', alert: 'Alertas', help: 'Ayuda', moderation: 'Moderación', review: 'Revisión' };
 const EVENT_LABELS = {
   session_created: 'Sesión creada', session_started: 'Examen iniciado', session_ended: 'Examen finalizado',
   student_joined: 'Alumno ingresó', student_left: 'Alumno salió', student_reconnected: 'Alumno volvió', student_replaced: 'Sesión abierta en otro dispositivo',
   alert: 'Alerta', help_requested: 'Pidió ayuda', help_cancelled: 'Canceló su pedido de ayuda', help_resolved: 'Ayuda atendida',
-  student_expelled: 'Alumno expulsado', review_set: 'Revisión del profesor', notes_updated: 'Notas del examen actualizadas',
+  student_expelled: 'Alumno expulsado', student_readmitted: 'Alumno readmitido', late_join_toggled: 'Ingreso tardío', review_set: 'Revisión del profesor', notes_updated: 'Notas del examen actualizadas',
   record_archived: 'Registro archivado', report_exported: 'Informe exportado'
 };
 
@@ -37,6 +37,9 @@ function describeEvent({ type, data }) {
     case 'student_left': return info.sessionStatus === 'active' ? 'Durante el examen' : 'Antes del inicio o tras el cierre';
     case 'student_reconnected': return `Tras ${formatSeconds(info.awaySeconds ?? 0)} desconectado`;
     case 'alert': return `${ALERT_LABELS[info.alertType] ?? info.alertType} · ${info.message ?? ''}`;
+    case 'student_expelled': return info.reason === 'max_alerts' ? `Límite de avisos alcanzado (${info.strikes})` : 'Decisión del profesor';
+    case 'student_readmitted': return `Readmitido con el cupo completo (tenía ${info.previousStrikes} avisos)`;
+    case 'late_join_toggled': return info.allow ? 'Habilitado' : 'Deshabilitado';
     case 'help_resolved': return `Esperó ${formatSeconds(info.waitedSeconds ?? 0)}`;
     case 'review_set': return `${REVIEW_LABELS[info.status ?? ''] ?? info.status}${info.note ? ` · ${info.note}` : ''}`;
     case 'notes_updated': return info.notes ? `"${info.notes}"` : 'Notas vaciadas';
@@ -102,13 +105,13 @@ export async function buildExamReport({ exam, events, profiles }) {
   const alertsOf = (studentId) => alerts.filter((alert) => alert.studentId === studentId);
   addTable(workbook, 'Alumnos', [
     { header: 'Alumno', width: 28 }, { header: 'RUT', width: 14 }, { header: 'Correo', width: 32 }, { header: 'Acceso', width: 12 }, { header: 'Carrera', width: 24 }, { header: 'Matrícula', width: 14 },
-    { header: 'Ingreso', width: 20, dates: true }, { header: 'Última salida', width: 20, dates: true }, { header: 'Estado', width: 14 },
-    { header: 'Alertas', width: 10 }, { header: 'Desconexiones', width: 15 }, { header: 'Revisión', width: 18 }, { header: 'Nota de revisión', width: 40 }
+    { header: 'Ingreso', width: 20, dates: true }, { header: 'Última salida', width: 20, dates: true }, { header: 'Estado', width: 14 }, { header: 'Motivo de expulsión', width: 22 }, { header: 'Avisos', width: 9 },
+    { header: 'Alertas', width: 10 }, { header: 'Desconexiones', width: 15 }, { header: 'Reconexiones', width: 14 }, { header: 'Tiempo fuera', width: 14 }, { header: 'Revisión', width: 18 }, { header: 'Nota de revisión', width: 40 }
   ], students.map((student) => {
     const profile = profiles?.[student.uid] ?? {};
     const review = reviews[student.studentId] ?? {};
     const own = alertsOf(student.studentId);
-    return [student.name, student.rut ?? '', student.email, student.guest ? 'Invitado' : 'Cuenta', profile.career ?? '', profile.studentId ?? '', localDate(student.joinedAt), localDate(student.leftAt), STUDENT_STATUS[student.status] ?? student.status, own.length, own.filter((alert) => alert.type === 'disconnected').length, REVIEW_LABELS[review.status ?? ''], review.note ?? ''];
+    return [student.name, student.rut ?? '', student.email, student.guest ? 'Invitado' : 'Cuenta', profile.career ?? '', profile.studentId ?? '', localDate(student.joinedAt), localDate(student.leftAt), STUDENT_STATUS[student.status] ?? student.status, student.status === 'expelled' ? (student.expelledReason === 'max_alerts' ? 'Límite de avisos' : 'Profesor') : '', student.strikes ?? 0, own.length, own.filter((alert) => alert.type === 'disconnected').length, student.reconnectCount ?? 0, formatSeconds(student.awaySeconds ?? 0), REVIEW_LABELS[review.status ?? ''], review.note ?? ''];
   }));
 
   // --- Alertas

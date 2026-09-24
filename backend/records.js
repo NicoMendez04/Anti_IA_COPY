@@ -9,7 +9,7 @@ const EVENT_CATEGORIES = {
   student_joined: 'presence', student_left: 'presence', student_reconnected: 'presence', student_replaced: 'presence',
   alert: 'alert',
   help_requested: 'help', help_cancelled: 'help', help_resolved: 'help',
-  student_expelled: 'moderation',
+  student_expelled: 'moderation', student_readmitted: 'moderation', late_join_toggled: 'session',
   review_set: 'review', notes_updated: 'review', record_archived: 'review', report_exported: 'review'
 };
 
@@ -58,6 +58,7 @@ export function examRecord(session) {
     studentUids: [...new Set(students.map((student) => student.uid).filter(Boolean))],
     alerts: session.alerts,
     helpRequestCount: session.helpRequests.length,
+    maxStrikes: session.maxStrikes ?? 0,
     stats: {
       studentCount: students.length,
       alertCount: session.alerts.length,

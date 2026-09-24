@@ -5,12 +5,12 @@ const AVATAR_COLORS = ['#c9f469', '#f4e3a6', '#e6c3bb', '#bfd8f2', '#d9c8f0', '#
 const REVIEW_LABELS = { '': 'Sin revisar', clear: 'Sin observaciones', suspicious: 'Sospechoso', annulled: 'Anulado' };
 const EXAM_STATUS = { waiting: 'En espera', active: 'En curso', ended: 'Finalizado' };
 const STUDENT_STATUS = { active: 'Conectado', offline: 'Desconectado', expelled: 'Expulsado' };
-const ALERT_LABELS = { tab_switch: 'Cambio de pestaña', window_blur: 'Pérdida de foco', screen_lock: 'Pantalla oculta o bloqueada', disconnected: 'Desconexión', reconnected: 'Reconexión', second_device: 'Otro dispositivo', copy: 'Copiar', cut: 'Cortar', paste: 'Pegar', context_menu: 'Menú contextual', print: 'Imprimir', screenshot_key: 'Captura de pantalla', shortcut: 'Atajo de teclado', returned: 'Volvió a la pantalla', orientation_change: 'Giro de pantalla', idle: 'Sin interacción', other: 'Otra actividad' };
+const ALERT_LABELS = { tab_switch: 'Cambio de pestaña', window_blur: 'Pérdida de foco', screen_lock: 'Pantalla oculta o bloqueada', disconnected: 'Desconexión', reconnected: 'Reconexión', second_device: 'Otro dispositivo', auto_expelled: 'Expulsión automática', copy: 'Copiar', cut: 'Cortar', paste: 'Pegar', context_menu: 'Menú contextual', print: 'Imprimir', screenshot_key: 'Captura de pantalla', shortcut: 'Atajo de teclado', returned: 'Volvió a la pantalla', orientation_change: 'Giro de pantalla', idle: 'Sin interacción', other: 'Otra actividad' };
 const EVENT_LABELS = {
   session_created: 'Sesión creada', session_started: 'Examen iniciado', session_ended: 'Examen finalizado',
   student_joined: 'Alumno ingresó', student_left: 'Alumno salió', student_reconnected: 'Alumno volvió', student_replaced: 'Sesión abierta en otro dispositivo',
   alert: 'Alerta', help_requested: 'Pidió ayuda', help_cancelled: 'Canceló su pedido de ayuda', help_resolved: 'Ayuda atendida',
-  student_expelled: 'Alumno expulsado', review_set: 'Revisión del profesor', notes_updated: 'Notas del examen actualizadas', record_archived: 'Registro archivado'
+  student_expelled: 'Alumno expulsado', student_readmitted: 'Alumno readmitido', late_join_toggled: 'Ingreso tardío', review_set: 'Revisión del profesor', notes_updated: 'Notas del examen actualizadas', record_archived: 'Registro archivado'
 };
 const SEVERITY_LABELS = { info: 'Informativa', warning: 'Advertencia', critical: 'Crítica' };
 const CATEGORY_LABELS = { session: 'Sesión', presence: 'Presencia', alert: 'Alertas', help: 'Ayuda', moderation: 'Moderación', review: 'Revisión' };
@@ -65,6 +65,9 @@ function describeEvent({ type, data }) {
     case 'student_left': return info.sessionStatus === 'active' ? 'Durante el examen' : 'Antes del inicio o tras el cierre';
     case 'student_reconnected': return `Tras ${formatSeconds(info.awaySeconds ?? 0)} desconectado`;
     case 'alert': return `${ALERT_LABELS[info.alertType] ?? info.alertType} · ${info.message ?? ''}`;
+    case 'student_expelled': return info.reason === 'max_alerts' ? `Límite de avisos alcanzado (${info.strikes})` : 'Decisión del profesor';
+    case 'student_readmitted': return `Readmitido con el cupo completo (tenía ${info.previousStrikes} avisos)`;
+    case 'late_join_toggled': return info.allow ? 'Habilitado' : 'Deshabilitado';
     case 'help_resolved': return `Esperó ${formatSeconds(info.waitedSeconds ?? 0)}`;
     case 'review_set': return `${REVIEW_LABELS[info.status ?? '']}${info.note ? ` · ${info.note}` : ''}`;
     case 'notes_updated': return info.notes ? `"${info.notes.slice(0, 120)}"` : 'Notas vaciadas';
@@ -197,7 +200,7 @@ function ExamDetail({ api, download, detail, setDetail, onBack, onDeleted }) {
         <tr>
           <td><strong>{student.name}</strong><span>{student.rut ? `${student.rut} · ` : ''}{student.email}</span></td>
           <td>{formatTime(student.joinedAt)}</td>
-          <td>{STUDENT_STATUS[student.status] ?? student.status}</td>
+          <td>{STUDENT_STATUS[student.status] ?? student.status}{student.status === 'expelled' && student.expelledReason === 'max_alerts' ? ' (límite de avisos)' : ''}{detail.maxStrikes ? <small className="strike-count"> · {student.strikes ?? 0}/{detail.maxStrikes} avisos</small> : null}</td>
           <td>{alerts.length ? <button type="button" className="row-action alert-toggle" onClick={() => setOpen({ ...open, [student.studentId]: !open[student.studentId] })}>{alerts.length} {open[student.studentId] ? '▴' : '▾'}</button> : 0}</td>
           <td><select value={review.status ?? ''} onChange={(e) => saveReview(student.studentId, { status: e.target.value })}>{Object.entries(REVIEW_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></td>
           <td><input className="note-input" defaultValue={review.note ?? ''} maxLength={1000} placeholder="Agregar nota" onBlur={(e) => e.target.value !== (review.note ?? '') && saveReview(student.studentId, { note: e.target.value })} /></td>
