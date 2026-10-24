@@ -439,7 +439,7 @@ io.on('connection', (socket) => {
         previous.data.replaced = true;
         previous.emit('student:replaced');
         previous.disconnect(true);
-        if (session.status === 'active') recordAlert(session, student, 'second_device', 'Abrió la sesión en otro dispositivo o pestaña');
+        if (session.status !== 'ended') recordAlert(session, student, 'second_device', 'Abrió la sesión en otro dispositivo o pestaña');
         logEvent(sessionId, 'student_replaced', { student, data: { sessionStatus: session.status } });
       } else if (student.status === 'offline') {
         const away = Math.max(0, Math.round((Date.now() - Date.parse(student.leftAt ?? student.joinedAt)) / 1000));
@@ -447,7 +447,7 @@ io.on('connection', (socket) => {
         student.awaySeconds = (student.awaySeconds ?? 0) + away;
         student.status = 'active';
         student.leftAt = null;
-        if (session.status === 'active') recordAlert(session, student, 'reconnected', `Volvió a la sesión tras ${formatAway(away)} desconectado`);
+        if (session.status !== 'ended') recordAlert(session, student, 'reconnected', `Volvió a la sesión tras ${formatAway(away)} desconectado`);
         logEvent(sessionId, 'student_reconnected', { student, data: { awaySeconds: away, sessionStatus: session.status } });
       }
       student.socketId = socket.id;
@@ -507,13 +507,11 @@ io.on('connection', (socket) => {
         notifyProfessor(session, { studentName: student.name, type: 'ready_lost' });
       }
     }
-    // En la sala de espera solo se actualiza el estado: el bloqueo inicial no se registra como actividad.
-    if (session.status === 'active') {
-      const alert = recordAlert(session, student, alertType, text);
-      if (alert.strike && student.status === 'active') {
-        socket.emit('strikes:update', { count: student.strikes, max: session.maxStrikes, type: alertType });
-        socket.emit('alert:recorded', alert);
-      }
+    // Todo movimiento queda en el panel; antes del inicio solo se registra, sin avisos ni sanciones.
+    const alert = recordAlert(session, student, alertType, text);
+    if (alert.strike && student.status === 'active') {
+      socket.emit('strikes:update', { count: student.strikes, max: session.maxStrikes, type: alertType });
+      socket.emit('alert:recorded', alert);
     }
     emitSession(session);
   });
@@ -581,7 +579,7 @@ io.on('connection', (socket) => {
       markAbsent(student);
       student.leftAt = new Date().toISOString();
       student.disconnectCount = (student.disconnectCount ?? 0) + 1;
-      if (session.status === 'active') recordAlert(session, student, 'disconnected', 'Se desconectó de la sesión (cerró la pestaña, apagó el equipo o perdió la conexión)');
+      if (session.status !== 'ended') recordAlert(session, student, 'disconnected', 'Se desconectó de la sesión (cerró la pestaña, apagó el equipo o perdió la conexión)');
       logEvent(sessionId, 'student_left', { student, data: { sessionStatus: session.status } });
       io.to(profRoom(session)).emit('student:left', { ...student, socketId: undefined });
       changed = true;
