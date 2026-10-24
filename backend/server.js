@@ -104,7 +104,6 @@ function openIncident(session, student, { type, backgroundMs, hint }, sessionSta
   const incident = { incidentId: randomUUID(), studentId: student.studentId, studentName: student.name, type, status: INCIDENT_PENDING, firstEventAt: nowIso, lastEventAt: nowIso, eventCount: 1, backgroundMs, hint: hint ?? null, sessionStatusAtReceive: sessionStatus, reviewedBy: null, reviewedAt: null, reviewNote: null };
   session.incidents.unshift(incident);
   logEvent(session.sessionId, 'incident_opened', { student, data: { incidentId: incident.incidentId, type, backgroundMs } });
-  if (sessionStatus === 'active') notifyProfessor(session, { studentName: student.name, type: 'incident' });
   return incident;
 }
 
@@ -142,10 +141,10 @@ const PRESENCE_ALERTS = new Set(['disconnected', 'reconnected', 'second_device']
 
 function recordAlert(session, student, type, message, options) {
   const counted = applyStrike(session, student, type, options);
-  const alert = { alertId: randomUUID(), studentId: student.studentId, studentName: student.name, type, severity: options?.severity ?? ALERT_SEVERITY[type] ?? 'info', timestamp: new Date().toISOString(), message, strike: counted ? student.strikes : null, maxStrikes: session.maxStrikes };
+  const alert = { alertId: randomUUID(), studentId: student.studentId, studentName: student.name, type, severity: options?.severity ?? ALERT_SEVERITY[type] ?? 'info', timestamp: new Date().toISOString(), message, strike: counted ? student.strikes : null,   maxStrikes: session.maxStrikes, sound: session.status === 'active' || type === 'ready_lost' };
   session.alerts.unshift(alert);
   io.to(profRoom(session)).emit('alert:triggered', alert);
-  if (session.status === 'active') notifyProfessor(session, { studentName: student.name, type });
+    if (alert.sound) notifyProfessor(session, { studentName: student.name, type });
   // Desconexión, reconexión y segundo dispositivo ya quedan como eventos de presencia.
   if (!PRESENCE_ALERTS.has(type)) logEvent(session.sessionId, 'alert', { student, data: { alertType: type, message, strike: alert.strike } });
   if (counted && student.strikes >= session.maxStrikes) {
@@ -504,7 +503,6 @@ io.on('connection', (socket) => {
       // Un alumno que ya había confirmado y volvió a usar el teléfono antes del inicio.
       if (wasReady && session.status === 'waiting') {
         recordAlert(session, student, 'ready_lost', 'Había confirmado su teléfono guardado y volvió a la pantalla antes del inicio');
-        notifyProfessor(session, { studentName: student.name, type: 'ready_lost' });
       }
     }
     // Todo movimiento queda en el panel; antes del inicio solo se registra, sin avisos ni sanciones.
