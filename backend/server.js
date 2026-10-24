@@ -50,7 +50,7 @@ function publicSession(session) {
     serverTime: new Date().toISOString(),
     maxStrikes: session.maxStrikes,
     allowLate: session.allowLate,
-    students: [...session.students.values()].map(({ socketId, seen, lastSeq, hiddenSinceMs, lastIncidentAtMs, graceUntilMs, ...student }) => ({ ...student, pendingIncidents: pendingIncidents(session, student.studentId) })),
+    students: [...session.students.values()].map(({ socketId, seen, lastSeq, hiddenSinceMs, lastIncidentAtMs, graceUntilMs, hideContext, hideTimes, ...student }) => ({ ...student, pendingIncidents: pendingIncidents(session, student.studentId) })),
     alerts: session.alerts,
     incidents: session.incidents,
     helpRequests: session.helpRequests
@@ -99,9 +99,9 @@ function applyStrike(session, student, type) {
 const pendingIncidents = (session, studentId) => session.incidents.filter((incident) => incident.studentId === studentId && incident.status === INCIDENT_PENDING).length;
 
 // Registra una incidencia a revisar (o consolida el retorno en la anterior si cae dentro de la ventana de agrupación).
-function openIncident(session, student, { type, backgroundMs }, sessionStatus) {
+function openIncident(session, student, { type, backgroundMs, hint }, sessionStatus) {
   const nowIso = new Date().toISOString();
-  const incident = { incidentId: randomUUID(), studentId: student.studentId, studentName: student.name, type, status: INCIDENT_PENDING, firstEventAt: nowIso, lastEventAt: nowIso, eventCount: 1, backgroundMs, sessionStatusAtReceive: sessionStatus, reviewedBy: null, reviewedAt: null, reviewNote: null };
+  const incident = { incidentId: randomUUID(), studentId: student.studentId, studentName: student.name, type, status: INCIDENT_PENDING, firstEventAt: nowIso, lastEventAt: nowIso, eventCount: 1, backgroundMs, hint: hint ?? null, sessionStatusAtReceive: sessionStatus, reviewedBy: null, reviewedAt: null, reviewNote: null };
   session.incidents.unshift(incident);
   logEvent(session.sessionId, 'incident_opened', { student, data: { incidentId: incident.incidentId, type, backgroundMs } });
   return incident;
@@ -463,7 +463,7 @@ io.on('connection', (socket) => {
     persistSession(session);
   });
 
-  socket.on('student:event', ({ sessionId, type, message, eventId, tabInstanceId, sequenceNumber } = {}) => {
+  socket.on('student:event', ({ sessionId, type, message, eventId, tabInstanceId, sequenceNumber, sinceInteractionMs } = {}) => {
     const session = sessions.get(sessionId);
     const student = session?.students.get(socket.data.studentId);
     if (!session || !student || student.socketId !== socket.id || student.status === 'expelled') return;
@@ -482,7 +482,7 @@ io.on('connection', (socket) => {
     const alertType = Object.hasOwn(ALERT_SEVERITY, type) ? type : 'other';
     const text = String(message ?? '').slice(0, 200) || 'Actividad registrada';
     const wasReady = Boolean(student.ready);
-    if (HIDE_SIGNALS.has(alertType)) classifySignal(student, alertType, { sessionStatus: session.status });
+    if (HIDE_SIGNALS.has(alertType)) classifySignal(student, alertType, { sessionStatus: session.status, sinceInteractionMs: typeof sinceInteractionMs === 'number' ? sinceInteractionMs : null });
     else if (alertType === RETURN_SIGNAL) handleReturn(session, student);
 
     if (wasReady !== Boolean(student.ready)) socket.emit('student:ready_state', { ready: Boolean(student.ready) });

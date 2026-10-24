@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { applyStartGrace, classifySignal, isDuplicateEvent, markAbsent } from './monitoring.js';
+import { applyStartGrace, buildHint, classifySignal, isDuplicateEvent, markAbsent } from './monitoring.js';
 
 const fresh = () => ({ visible: true, hiddenAt: null });
 
@@ -92,4 +92,17 @@ test('el margen de gracia al iniciar solo cubre a quien tenía la pantalla visib
   const locked = { visible: false, hiddenSinceMs: 1000, hiddenAt: 'x' };
   applyStartGrace(locked, 10_000);
   assert.ok(classifySignal(locked, 'returned', { sessionStatus: 'active', now: 12_000 }).incident);
+});
+test('las pistas orientan sin decidir: bloqueo, cambio de app o no concluyente', () => {
+  assert.equal(buildHint({ sinceInteractionMs: 9000, backgroundMs: 300_000, hideCount: 1 }).kind, 'probable_lock');
+  assert.equal(buildHint({ sinceInteractionMs: 500, backgroundMs: 6000, hideCount: 1 }).kind, 'probable_app');
+  assert.equal(buildHint({ sinceInteractionMs: 500, backgroundMs: 300_000, hideCount: 1 }).kind, 'unclear');
+  assert.equal(buildHint({ sinceInteractionMs: null, backgroundMs: null, hideCount: 1 }).kind, 'unclear');
+});
+
+test('el incidente incluye la pista calculada con el contexto de la ocultación', () => {
+  const student = fresh();
+  classifySignal(student, 'tab_switch', { sessionStatus: 'active', now: 1000, sinceInteractionMs: 400 });
+  const { incident } = classifySignal(student, 'returned', { sessionStatus: 'active', now: 5000 });
+  assert.equal(incident.hint.kind, 'probable_app');
 });

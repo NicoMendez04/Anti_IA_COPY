@@ -468,11 +468,11 @@ function StudentLive() { const { sessionId } = useParams(); const navigate = use
     // Cada acción del alumno se envía al servidor, que la registra y avisa al profesor. El contador local lo
     // actualiza la confirmación del servidor, así no se cuenta doble.
     const lastSent = {};
-    const report = (type, message, minGapMs = 700) => {
+    const report = (type, message, minGapMs = 700, extra = {}) => {
       const now = Date.now();
       if (now - (lastSent[type] ?? 0) < minGapMs) return;
       lastSent[type] = now;
-      socket.emit('student:event', { sessionId, type, message, eventId: crypto.randomUUID(), tabInstanceId: TAB_INSTANCE_ID, sequenceNumber: eventSequence++ });
+      socket.emit('student:event', { sessionId, type, message, eventId: crypto.randomUUID(), tabInstanceId: TAB_INSTANCE_ID, sequenceNumber: eventSequence++, ...extra });
     };
     let lastInteraction = Date.now();
     let hiddenAt = null;
@@ -488,7 +488,7 @@ function StudentLive() { const { sessionId } = useParams(); const navigate = use
         hiddenAt = Date.now();
         pageStayedVisible = false;
         // El navegador no distingue bloqueo, cambio de app o de pestaña: se informa solo que la página se ocultó.
-        report('tab_switch', 'Página oculta (bloqueo de pantalla, cambio de app o de pestaña)', 0);
+        report('tab_switch', 'Página oculta (bloqueo de pantalla, cambio de app o de pestaña)', 0, { sinceInteractionMs: blurSinceInteraction ?? Date.now() - lastInteraction });
       } else if (hiddenAt) {
         const seconds = Math.round((Date.now() - hiddenAt) / 1000);
         hiddenAt = null;
@@ -501,14 +501,16 @@ function StudentLive() { const { sessionId } = useParams(); const navigate = use
     let blurTimer = null;
     let blurReported = false;
     const cancelBlur = () => { clearTimeout(blurTimer); blurTimer = null; };
+    let blurSinceInteraction = null;
     const blur = () => {
       if (document.hidden || blurTimer || blurReported) return;
+      blurSinceInteraction = Date.now() - lastInteraction;
       blurTimer = setTimeout(() => {
         blurTimer = null;
         if (document.hidden || document.hasFocus() || Date.now() < suppressBlurUntil) return;
         blurReported = true;
         pageStayedVisible = false;
-        report('window_blur', 'La ventana perdió el foco', 0);
+        report('window_blur', 'La ventana perdió el foco', 0, { sinceInteractionMs: blurSinceInteraction });
       }, 1500);
     };
     const focus = () => {

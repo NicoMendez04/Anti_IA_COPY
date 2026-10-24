@@ -84,6 +84,7 @@ function downloadCsv(filename, rows) {
 }
 
 const INCIDENT_LABELS = { unverified_return: 'Retorno detectado, revisar', page_reload: 'Recarga o reapertura de la página, revisar' };
+const HINT_LABELS = { probable_lock: 'Pista: probable bloqueo de pantalla', probable_app: 'Pista: probable cambio de app', unclear: 'Pista: no concluyente' };
 const INCIDENT_STATUS = { PENDING_REVIEW: 'Pendiente', CONFIRMED: 'Falta confirmada', DISMISSED: 'Descartada' };
 
 // Incidencias a revisar: un retorno observado no prueba el uso de otra app; solo el profesor confirma la falta.
@@ -93,7 +94,7 @@ export function IncidentsPanel({ incidents = [], onReview }) {
   const describe = (incident) => `${INCIDENT_LABELS[incident.type] ?? incident.type}${incident.backgroundMs != null ? ` · ${formatSeconds(Math.round(incident.backgroundMs / 1000))} con la página oculta` : ''}`;
   return <section className="alerts-panel"><div className="panel-header"><div><div className="panel-label">REVISIÓN DEL PROFESOR</div><h2>Incidencias a revisar</h2></div><span className="alert-count">{pending.length}</span></div>
     {pending.length === 0 && reviewed.length === 0 && <div className="empty-alerts">No hay incidencias pendientes.</div>}
-    {pending.length > 0 && <div className="alert-list">{pending.map((incident) => <div className="alert-row" key={incident.incidentId}><span className="alert-icon alert-sev-warning">!</span><span><strong>{incident.studentName}</strong> · {describe(incident)}<small>{new Date(incident.firstEventAt).toLocaleTimeString('es-ES')}{incident.eventCount > 1 ? ` · ${incident.eventCount} señales agrupadas` : ''}</small></span><span className="incident-actions"><button type="button" className="row-action" onClick={() => onReview(incident.incidentId, 'dismiss')}>Descartar</button><button type="button" className="row-action" onClick={() => onReview(incident.incidentId, 'confirm')}>Confirmar falta</button></span></div>)}</div>}
+    {pending.length > 0 && <div className="alert-list">{pending.map((incident) => <div className="alert-row" key={incident.incidentId}><span className="alert-icon alert-sev-warning">!</span><span><strong>{incident.studentName}</strong> · {describe(incident)}<small>{new Date(incident.firstEventAt).toLocaleTimeString('es-ES')}{incident.eventCount > 1 ? ` · ${incident.eventCount} señales agrupadas` : ''}{incident.hint ? <><br />{HINT_LABELS[incident.hint.kind]}{incident.hint.reasons?.length ? ` (${incident.hint.reasons.join(', ')})` : ''} · verificar en el puesto</> : null}</small></span><span className="incident-actions"><button type="button" className="row-action" onClick={() => onReview(incident.incidentId, 'dismiss')}>Descartar</button><button type="button" className="row-action" onClick={() => onReview(incident.incidentId, 'confirm')}>Confirmar falta</button></span></div>)}</div>}
     {reviewed.length > 0 && <div className="alert-list">{reviewed.map((incident) => <div className="alert-row" key={incident.incidentId}><span className="alert-icon">{incident.status === 'CONFIRMED' ? '!' : '✓'}</span><span><strong>{incident.studentName}</strong> · {describe(incident)}<small>{INCIDENT_STATUS[incident.status]} · {incident.reviewedBy}</small></span></div>)}</div>}
   </section>;
 }
