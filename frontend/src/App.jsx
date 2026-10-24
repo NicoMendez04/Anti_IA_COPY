@@ -254,8 +254,6 @@ function ProfessorDashboard() {
   const [now, setNow] = useState(new Date());
   const clockOffset = useRef(0);
   const [projecting, setProjecting] = useState(false);
-  const [helpSoundEnabled, setHelpSoundEnabled] = useState(false);
-  const helpAudioContext = useRef(null);
 
   useEffect(() => { const timer = setInterval(() => setNow(new Date(Date.now() + clockOffset.current)), 1000); return () => clearInterval(timer); }, []);
   useEffect(() => {
@@ -263,41 +261,11 @@ function ProfessorDashboard() {
     const update = (next) => { if (next.serverTime) clockOffset.current = Date.parse(next.serverTime) - Date.now(); setSession((current) => ({ ...current, ...next })); };
     socket.on('session:updated', update);
     socket.on('alert:triggered', (alert) => setSession((current) => ({ ...current, alerts: [alert, ...(current.alerts || [])] })));
-    socket.on('help:requested', playHelpSound);
     socket.connect();
     socket.emit('professor:join', { sessionId: session.sessionId, token: auth?.token });
-    return () => { socket.off('session:updated', update); socket.off('help:requested', playHelpSound); socket.disconnect(); };
+    return () => { socket.off('session:updated', update); socket.disconnect(); };
   }, [session?.sessionId]);
 
-  function enableHelpSound() {
-    if (helpAudioContext.current) {
-      helpAudioContext.current.close?.();
-      helpAudioContext.current = null;
-      setHelpSoundEnabled(false);
-      return;
-    }
-    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-    if (!AudioContextClass) return;
-    helpAudioContext.current = new AudioContextClass();
-    helpAudioContext.current.resume();
-    setHelpSoundEnabled(true);
-  }
-  function playHelpSound() {
-    const ctx = helpAudioContext.current;
-    if (!ctx) return;
-    [660, 880].forEach((freq, i) => {
-      const oscillator = ctx.createOscillator(); const gain = ctx.createGain();
-      oscillator.frequency.value = freq;
-      const start = ctx.currentTime + i * 0.16;
-      gain.gain.setValueAtTime(0.2, start);
-      gain.gain.exponentialRampToValueAtTime(0.001, start + 0.3);
-      oscillator.connect(gain); gain.connect(ctx.destination);
-      oscillator.start(start); oscillator.stop(start + 0.3);
-    });
-  }
-  function resolveHelp(requestId) {
-    socket.emit('professor:resolve_help', { sessionId: session.sessionId, requestId, token: auth?.token });
-  }
   function formatElapsed(iso) {
     const seconds = Math.max(0, Math.floor((now.getTime() - Date.parse(iso)) / 1000));
     const m = Math.floor(seconds / 60);
@@ -360,12 +328,11 @@ function ProfessorDashboard() {
     (student.awaySeconds ?? 0) > 0 ? `${formatDuration(student.awaySeconds)} fuera en total` : null
   ].filter(Boolean).join(' · ');
   if (session.status === 'ended') return <SessionSummary session={session} />;
-  const pendingHelp = session.helpRequests || [];
   const remainingSeconds = session.endsAt ? Math.max(0, Math.ceil((Date.parse(session.endsAt) - now.getTime()) / 1000)) : 0;
   const remainingLabel = `${String(Math.floor(remainingSeconds / 60)).padStart(2, '0')}:${String(remainingSeconds % 60).padStart(2, '0')}`;
   return <Layout><section className="dashboard"><div className="dashboard-head"><div><div className="page-kicker">SALA EN DIRECTO <span>/{session.sessionId.slice(-4).toUpperCase()}</span></div><h1>{session.examName}</h1><p>Creada por {session.professorName} · {session.status === 'active' ? `Tiempo restante ${remainingLabel}` : session.status === 'waiting' ? 'Esperando inicio' : 'Sesión finalizada'}</p></div><div className="head-actions">{pendingHelp.length > 0 && <span className="help-badge">✋ {pendingHelp.length} en espera</span>}<span className={`status-chip ${session.status}`}>{session.status === 'active' ? '● En curso' : session.status === 'waiting' ? '◌ Lista para iniciar' : '○ Finalizada'}</span>{session.status === 'waiting' && <button className="button button-dark" disabled={notReadyStudents.length > 0} title={notReadyStudents.length ? 'Todos los alumnos deben confirmar que guardaron su teléfono' : ''} onClick={() => startSession(false)}>Iniciar examen <span>→</span></button>}{session.status === 'waiting' && notReadyStudents.length > 0 && <button className="button" type="button" onClick={() => startSession(true)}>Iniciar de todos modos ({notReadyStudents.length} sin confirmar)</button>}{session.status === 'active' && <button className="button button-danger" onClick={endSession}>Finalizar sesión</button>}</div></div><BigTimer session={session} now={now} onProject={() => setProjecting(true)} />
       {projecting && <ProjectorOverlay session={session} now={now} onClose={() => setProjecting(false)} />}
-      <section className="help-panel"><div className="panel-header"><div><div className="panel-label">SOLICITUDES DE AYUDA</div><h2>{pendingHelp.length ? `${pendingHelp.length} en espera` : 'Nadie ha llamado'}</h2></div><button className="sound-toggle" type="button" onClick={enableHelpSound}>{helpSoundEnabled ? 'Sonido activado · tocar para silenciar' : 'Activar aviso sonoro'}</button></div>{pendingHelp.length ? <div className="help-list">{pendingHelp.map((request) => <div className="help-row" key={request.requestId}><span className="help-dot" /><span className="help-name">{request.studentName}<small>Esperando {formatElapsed(request.requestedAt)}</small></span><button className="button button-dark" type="button" onClick={() => resolveHelp(request.requestId)}>Atender</button></div>)}</div> : <div className="empty-state">Sin solicitudes activas.<br /><span>Cuando un estudiante llame, aparecerá aquí.</span></div>}</section><div className="dashboard-grid"><section className="qr-panel"><div className="panel-label">ACCESO DE ESTUDIANTES</div><div className="qr-frame"><img src={session.qrCode} alt="Código QR de acceso" /></div><strong>{session.status === 'waiting' ? 'Escanea y espera el inicio' : 'Sesión iniciada'}</strong>{session.status === 'active' && <button className="late-toggle" type="button" onClick={toggleLate}>{session.allowLate ? 'Ingreso tardío HABILITADO · tocar para cerrar' : 'Ingreso nuevo cerrado · tocar para habilitar tardíos'}</button>}<p>También puedes compartir este enlace:</p><button className="copy-link" onClick={() => navigator.clipboard?.writeText(session.qrData)}>{session.qrData.replace('http://', '').replace('https://', '')} <span>Copiar</span></button></section><section className="roster-panel">
+      <div className="dashboard-grid"><section className="qr-panel"><div className="panel-label">ACCESO DE ESTUDIANTES</div><div className="qr-frame"><img src={session.qrCode} alt="Código QR de acceso" /></div><strong>{session.status === 'waiting' ? 'Escanea y espera el inicio' : 'Sesión iniciada'}</strong>{session.status === 'active' && <button className="late-toggle" type="button" onClick={toggleLate}>{session.allowLate ? 'Ingreso tardío HABILITADO · tocar para cerrar' : 'Ingreso nuevo cerrado · tocar para habilitar tardíos'}</button>}<p>También puedes compartir este enlace:</p><button className="copy-link" onClick={() => navigator.clipboard?.writeText(session.qrData)}>{session.qrData.replace('http://', '').replace('https://', '')} <span>Copiar</span></button></section><section className="roster-panel">
       <div className="panel-header"><div><div className="panel-label">PRESENCIA</div><h2>{liveStudents.length.toString().padStart(2, '0')} en vivo</h2></div><span className="live-dot">{session.status === 'waiting' ? 'ESPERANDO' : 'EN VIVO'}</span></div>
       {allStudents.length === 0 ? <div className="empty-state">Esperando a tu primera conexión<br /><span>Comparte el código de acceso con la clase.</span></div> : <>
         <div className="presence-summary">{session.status === 'waiting' && <span><i className="dot dot-live" />{readyCount} de {rosterForStart.length} listos (teléfono guardado)</span>}{stillOnCount > 0 && <span><i className="dot dot-away" />{stillOnCount} pulsaron listo pero siguen con la pantalla encendida</span>}<span><i className="dot dot-live" />{liveStudents.length - hiddenCount} atentos</span><span><i className="dot dot-hidden" />{hiddenCount} con pantalla oculta</span><span><i className="dot dot-away" />{awayStudents.length} ausentes</span>{expelledStudents.length > 0 && <span><i className="dot dot-out" />{expelledStudents.length} expulsados</span>}</div>
