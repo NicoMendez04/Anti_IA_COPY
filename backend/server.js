@@ -502,7 +502,10 @@ io.on('connection', (socket) => {
     if (wasReady !== Boolean(student.ready)) {
       socket.emit('student:ready_state', { ready: Boolean(student.ready) });
       // Un alumno que ya había confirmado y volvió a usar el teléfono antes del inicio.
-      if (wasReady && session.status === 'waiting') notifyProfessor(session, { studentName: student.name, type: 'ready_lost' });
+      if (wasReady && session.status === 'waiting') {
+        recordAlert(session, student, 'ready_lost', 'Había confirmado su teléfono guardado y volvió a la pantalla antes del inicio');
+        notifyProfessor(session, { studentName: student.name, type: 'ready_lost' });
+      }
     }
     // En la sala de espera solo se actualiza el estado: el bloqueo inicial no se registra como actividad.
     if (session.status === 'active') {
