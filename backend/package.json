@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
+    "test": "node --test",
     "dev": "node --watch-path=server.js server.js"
   },
   "dependencies": {

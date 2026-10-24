@@ -5,7 +5,7 @@ const AVATAR_COLORS = ['#c9f469', '#f4e3a6', '#e6c3bb', '#bfd8f2', '#d9c8f0', '#
 const REVIEW_LABELS = { '': 'Sin revisar', clear: 'Sin observaciones', suspicious: 'Sospechoso', annulled: 'Anulado' };
 const EXAM_STATUS = { waiting: 'En espera', active: 'En curso', ended: 'Finalizado' };
 const STUDENT_STATUS = { active: 'Conectado', offline: 'Desconectado', expelled: 'Expulsado' };
-const ALERT_LABELS = { tab_switch: 'Cambio de pestaña', window_blur: 'Pérdida de foco', screen_lock: 'Pantalla oculta o bloqueada', disconnected: 'Desconexión', reconnected: 'Reconexión', second_device: 'Otro dispositivo', auto_expelled: 'Expulsión automática', copy: 'Copiar', cut: 'Cortar', paste: 'Pegar', context_menu: 'Menú contextual', print: 'Imprimir', screenshot_key: 'Captura de pantalla', shortcut: 'Atajo de teclado', minor_shortcut: 'Atajo menor (sin aviso)', returned: 'Volvió a la pantalla', orientation_change: 'Giro de pantalla', idle: 'Sin interacción', other: 'Otra actividad' };
+const ALERT_LABELS = { tab_switch: 'Página oculta', window_blur: 'Pérdida de foco', screen_lock: 'Pantalla oculta o bloqueada', disconnected: 'Desconexión', reconnected: 'Reconexión', second_device: 'Otro dispositivo', auto_expelled: 'Expulsión automática', copy: 'Copiar', cut: 'Cortar', paste: 'Pegar', context_menu: 'Menú contextual', print: 'Imprimir', screenshot_key: 'Captura de pantalla', shortcut: 'Atajo de teclado', phone_unlock: 'Desbloqueó el teléfono', away_strike: 'Aviso por ausencia', page_closed: 'Cerró o recargó la página', minor_shortcut: 'Atajo menor (sin aviso)', returned: 'Retorno detectado', orientation_change: 'Giro de pantalla', idle: 'Sin interacción', other: 'Otra actividad' };
 const EVENT_LABELS = {
   session_created: 'Sesión creada', session_started: 'Examen iniciado', session_ended: 'Examen finalizado',
   student_joined: 'Alumno ingresó', student_left: 'Alumno salió', student_reconnected: 'Alumno volvió', student_replaced: 'Sesión abierta en otro dispositivo',
@@ -81,6 +81,21 @@ function downloadCsv(filename, rows) {
   const link = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: filename });
   link.click();
   URL.revokeObjectURL(link.href);
+}
+
+const INCIDENT_LABELS = { unverified_return: 'Retorno detectado, revisar', page_reload: 'Recarga o reapertura de la página, revisar' };
+const INCIDENT_STATUS = { PENDING_REVIEW: 'Pendiente', CONFIRMED: 'Falta confirmada', DISMISSED: 'Descartada' };
+
+// Incidencias a revisar: un retorno observado no prueba el uso de otra app; solo el profesor confirma la falta.
+export function IncidentsPanel({ incidents = [], onReview }) {
+  const pending = incidents.filter((incident) => incident.status === 'PENDING_REVIEW');
+  const reviewed = incidents.filter((incident) => incident.status !== 'PENDING_REVIEW').slice(0, 5);
+  const describe = (incident) => `${INCIDENT_LABELS[incident.type] ?? incident.type}${incident.backgroundMs != null ? ` · ${formatSeconds(Math.round(incident.backgroundMs / 1000))} con la página oculta` : ''}`;
+  return <section className="alerts-panel"><div className="panel-header"><div><div className="panel-label">REVISIÓN DEL PROFESOR</div><h2>Incidencias a revisar</h2></div><span className="alert-count">{pending.length}</span></div>
+    {pending.length === 0 && reviewed.length === 0 && <div className="empty-alerts">No hay incidencias pendientes.</div>}
+    {pending.length > 0 && <div className="alert-list">{pending.map((incident) => <div className="alert-row" key={incident.incidentId}><span className="alert-icon alert-sev-warning">!</span><span><strong>{incident.studentName}</strong> · {describe(incident)}<small>{new Date(incident.firstEventAt).toLocaleTimeString('es-ES')}{incident.eventCount > 1 ? ` · ${incident.eventCount} señales agrupadas` : ''}</small></span><span className="incident-actions"><button type="button" className="row-action" onClick={() => onReview(incident.incidentId, 'dismiss')}>Descartar</button><button type="button" className="row-action" onClick={() => onReview(incident.incidentId, 'confirm')}>Confirmar falta</button></span></div>)}</div>}
+    {reviewed.length > 0 && <div className="alert-list">{reviewed.map((incident) => <div className="alert-row" key={incident.incidentId}><span className="alert-icon">{incident.status === 'CONFIRMED' ? '!' : '✓'}</span><span><strong>{incident.studentName}</strong> · {describe(incident)}<small>{INCIDENT_STATUS[incident.status]} · {incident.reviewedBy}</small></span></div>)}</div>}
+  </section>;
 }
 
 export function Avatar({ name, color }) {

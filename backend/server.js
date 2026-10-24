@@ -10,6 +10,7 @@ import path from 'node:path';
 import { authFromToken, getUserProfile, registerAccountRoutes, requireAuth } from './accounts.js';
 import { registerCatalogRoutes, resolveCourse } from './catalog.js';
 import { logEvent, persistSession, registerRecordRoutes } from './records.js';
+import { HIDE_SIGNALS, RETURN_SIGNAL, INCIDENT_PENDING, INCIDENT_CONFIRMED, INCIDENT_DISMISSED, classifySignal, isDuplicateEvent, markAbsent, applyStartGrace, START_GRACE_SECONDS } from './monitoring.js';
 import { limitGuestRegistrations, normalizeRut, signGuestToken, verifyGuestToken } from './guest.js';
 
 const app = express();
@@ -49,8 +50,9 @@ function publicSession(session) {
     serverTime: new Date().toISOString(),
     maxStrikes: session.maxStrikes,
     allowLate: session.allowLate,
-    students: [...session.students.values()].map(({ socketId, ...student }) => student),
+    students: [...session.students.values()].map(({ socketId, seen, lastSeq, hiddenSinceMs, lastIncidentAtMs, graceUntilMs, ...student }) => ({ ...student, pendingIncidents: pendingIncidents(session, student.studentId) })),
     alerts: session.alerts,
+    incidents: session.incidents,
     helpRequests: session.helpRequests
   };
 }
@@ -69,44 +71,56 @@ function studentView(session) {
     endsAt: session.endsAt,
     serverTime: new Date().toISOString(),
     maxStrikes: session.maxStrikes,
+    graceSeconds: START_GRACE_SECONDS,
     students: [...session.students.values()].map(({ studentId, status }) => ({ studentId, status }))
   };
 }
 
 // Gravedad de cada tipo de alerta; lo que el cliente envíe fuera de esta lista se registra como "other".
 const ALERT_SEVERITY = {
-  tab_switch: 'warning', window_blur: 'warning', screen_lock: 'warning', context_menu: 'warning', shortcut: 'warning', minor_shortcut: 'info',
+  tab_switch: 'info', window_blur: 'info', screen_lock: 'info', page_closed: 'info', context_menu: 'warning', shortcut: 'warning', minor_shortcut: 'info',
   copy: 'critical', cut: 'critical', paste: 'critical', print: 'critical', screenshot_key: 'critical',
   disconnected: 'critical', second_device: 'critical',
   returned: 'info', reconnected: 'info', orientation_change: 'info', idle: 'info', other: 'info',
   auto_expelled: 'critical'
 };
 
-// Acciones que restan un aviso al alumno. Salir de la pantalla cuenta una sola vez por salida
-// (hasta que vuelve) y "reconnected" cuenta como el aviso por desbloquear el teléfono tras una ausencia.
-const LEAVE_TYPES = new Set(['tab_switch', 'window_blur']);
-const STRIKE_TYPES = new Set(['reconnected', 'second_device', 'copy', 'cut', 'paste', 'print', 'screenshot_key', 'shortcut']);
+// Acciones que restan un aviso de inmediato. Ocultar la página o volver a ella NO es una falta automática:
+// un retorno durante la evaluación crea una incidencia a revisar y solo suma un aviso si el profesor la confirma.
+const STRIKE_TYPES = new Set(['second_device', 'copy', 'cut', 'paste', 'print', 'screenshot_key', 'shortcut']);
 
-// Una caída de red breve al volver no es una falta: solo cuenta si estuvo ausente más de este tiempo.
-const MIN_AWAY_FOR_STRIKE_SECONDS = 20;
-
-function applyStrike(session, student, type, { noStrike = false } = {}) {
+function applyStrike(session, student, type) {
   if (!session.maxStrikes || session.status !== 'active' || student.status !== 'active') return false;
-  if (type === 'returned') { student.inEpisode = false; student.locked = false; return false; }
-  // Bloquear el teléfono no es una falta, ni tampoco la reconexión que ocurre al desbloquearlo.
-  if (type === 'screen_lock') { student.locked = true; return false; }
-  if (type === 'reconnected' && student.locked) return false;
-  if (noStrike) return false;
-  // Si la salida ya se contó (pestaña oculta o pérdida de foco), volver a conectar no suma otro aviso.
-  if (type === 'reconnected' && student.inEpisode) return false;
-  if (LEAVE_TYPES.has(type)) {
-    if (student.inEpisode) return false;
-    student.inEpisode = true;
-  } else if (!STRIKE_TYPES.has(type)) return false;
+  if (!STRIKE_TYPES.has(type)) return false;
   student.strikes = (student.strikes ?? 0) + 1;
   return true;
 }
 
+const pendingIncidents = (session, studentId) => session.incidents.filter((incident) => incident.studentId === studentId && incident.status === INCIDENT_PENDING).length;
+
+// Registra una incidencia a revisar (o consolida el retorno en la anterior si cae dentro de la ventana de agrupación).
+function openIncident(session, student, { type, backgroundMs }, sessionStatus) {
+  const nowIso = new Date().toISOString();
+  const incident = { incidentId: randomUUID(), studentId: student.studentId, studentName: student.name, type, status: INCIDENT_PENDING, firstEventAt: nowIso, lastEventAt: nowIso, eventCount: 1, backgroundMs, sessionStatusAtReceive: sessionStatus, reviewedBy: null, reviewedAt: null, reviewNote: null };
+  session.incidents.unshift(incident);
+  logEvent(session.sessionId, 'incident_opened', { student, data: { incidentId: incident.incidentId, type, backgroundMs } });
+  return incident;
+}
+
+function groupIntoLastIncident(session, student) {
+  const last = session.incidents.find((incident) => incident.studentId === student.studentId);
+  if (!last) return;
+  last.lastEventAt = new Date().toISOString();
+  last.eventCount += 1;
+}
+
+// Un retorno o recarga observado: actualiza visibilidad y, si corresponde, abre la incidencia.
+function handleReturn(session, student, { reload = false } = {}) {
+  const result = classifySignal(student, RETURN_SIGNAL, { sessionStatus: session.status, reload });
+  if (result.incident) openIncident(session, student, result.incident, session.status);
+  else if (result.grouped) groupIntoLastIncident(session, student);
+  return result;
+}
 function expelStudent(session, student, { reason, actor = null }) {
   student.status = 'expelled';
   student.expelledReason = reason;
@@ -122,7 +136,7 @@ const PRESENCE_ALERTS = new Set(['disconnected', 'reconnected', 'second_device']
 
 function recordAlert(session, student, type, message, options) {
   const counted = applyStrike(session, student, type, options);
-  const alert = { alertId: randomUUID(), studentId: student.studentId, studentName: student.name, type, severity: ALERT_SEVERITY[type] ?? 'info', timestamp: new Date().toISOString(), message, strike: counted ? student.strikes : null, maxStrikes: session.maxStrikes };
+  const alert = { alertId: randomUUID(), studentId: student.studentId, studentName: student.name, type, severity: options?.severity ?? ALERT_SEVERITY[type] ?? 'info', timestamp: new Date().toISOString(), message, strike: counted ? student.strikes : null, maxStrikes: session.maxStrikes };
   session.alerts.unshift(alert);
   io.to(profRoom(session)).emit('alert:triggered', alert);
   // Desconexión, reconexión y segundo dispositivo ya quedan como eventos de presencia.
@@ -203,6 +217,7 @@ app.post('/api/sessions', requireAuth('profesor', 'admin'), async (req, res) => 
     endedAt: null,
     students: new Map(),
     alerts: [],
+    incidents: [],
     helpRequests: [],
     helpTotal: 0,
     helpResolvedTotal: 0,
@@ -285,7 +300,6 @@ app.post('/api/sessions/:sessionId/readmit/:studentId', requireAuth('profesor', 
   student.status = 'offline';
   student.leftAt = new Date().toISOString();
   student.strikes = 0;
-  student.inEpisode = false;
   student.expelledReason = null;
   logEvent(session.sessionId, 'student_readmitted', { actor: req.auth, student, data: { previousStrikes } });
   emitSession(session);
@@ -293,12 +307,43 @@ app.post('/api/sessions/:sessionId/readmit/:studentId', requireAuth('profesor', 
   res.json({ success: true });
 });
 
+// Solo el profesor de la sesión confirma o descarta una incidencia. Confirmarla es lo que la convierte en falta.
+app.post('/api/sessions/:sessionId/incidents/:incidentId/review', requireAuth('profesor', 'admin'), (req, res) => {
+  const session = sessions.get(req.params.sessionId);
+  if (!session) return res.status(404).json({ message: 'Sesión no encontrada.' });
+  if (session.professorEmail !== req.auth.email) return res.status(403).json({ message: 'No autorizado.' });
+  const incident = session.incidents.find((item) => item.incidentId === req.params.incidentId);
+  if (!incident) return res.status(404).json({ message: 'Incidencia no encontrada.' });
+  if (incident.status !== INCIDENT_PENDING) return res.status(409).json({ message: 'Esa incidencia ya fue revisada.' });
+  const decision = req.body?.decision;
+  if (!['confirm', 'dismiss'].includes(decision)) return res.status(400).json({ message: 'Decisión inválida.' });
+
+  incident.status = decision === 'confirm' ? INCIDENT_CONFIRMED : INCIDENT_DISMISSED;
+  incident.reviewedBy = req.auth.email;
+  incident.reviewedAt = new Date().toISOString();
+  incident.reviewNote = String(req.body?.note ?? '').slice(0, 300) || null;
+  const student = session.students.get(incident.studentId);
+  logEvent(session.sessionId, 'incident_reviewed', { actor: req.auth, student, data: { incidentId: incident.incidentId, decision: incident.status, note: incident.reviewNote } });
+
+  if (decision === 'confirm' && student && session.maxStrikes && student.status !== 'expelled') {
+    student.strikes = (student.strikes ?? 0) + 1;
+    if (student.socketId) io.to(student.socketId).emit('strikes:update', { count: student.strikes, max: session.maxStrikes, type: incident.type });
+    if (student.strikes >= session.maxStrikes) {
+      expelStudent(session, student, { reason: 'max_alerts', actor: req.auth });
+      recordAlert(session, student, 'auto_expelled', `Expulsado al llegar a ${session.maxStrikes} faltas confirmadas`);
+    }
+  }
+  emitSession(session);
+  persistSession(session);
+  res.json({ success: true, incident });
+});
 function startSession(session, actor) {
   if (session.status !== 'waiting') return false;
   const startedAt = new Date();
   session.status = 'active';
   session.startedAt = startedAt.toISOString();
   session.endsAt = new Date(startedAt.getTime() + session.duration * 60_000).toISOString();
+  for (const student of session.students.values()) applyStartGrace(student, startedAt.getTime());
   emitSession(session);
   persistSession(session);
   logEvent(session.sessionId, 'session_started', { actor, data: { endsAt: session.endsAt } });
@@ -359,7 +404,7 @@ io.on('connection', (socket) => {
     emitSession(session);
   });
 
-  socket.on('student:join', async ({ sessionId, guestToken }) => {
+  socket.on('student:join', async ({ sessionId, guestToken, hidden = false, stayedVisible = false }) => {
     const guest = verifyGuestToken(guestToken);
     if (!guest || guest.sid !== sessionId) return socket.emit('session:error', { message: 'Tu pase de ingreso no es válido. Vuelve a escanear el QR para registrarte.' });
     const session = sessions.get(sessionId);
@@ -388,15 +433,16 @@ io.on('connection', (socket) => {
         student.awaySeconds = (student.awaySeconds ?? 0) + away;
         student.status = 'active';
         student.leftAt = null;
-        if (session.status === 'active') recordAlert(session, student, 'reconnected', `Volvió a la sesión tras ${formatAway(away)} desconectado`, { noStrike: away < MIN_AWAY_FOR_STRIKE_SECONDS });
+        if (session.status === 'active') recordAlert(session, student, 'reconnected', `Volvió a la sesión tras ${formatAway(away)} desconectado`);
         logEvent(sessionId, 'student_reconnected', { student, data: { awaySeconds: away, sessionStatus: session.status } });
       }
       student.socketId = socket.id;
       if (student.status !== 'expelled') student.status = 'active';
       student.leftAt = null;
-      student.visible = true;
-      student.hiddenAt = null;
-      student.inEpisode = false;
+      // Reconectar con la pantalla visible tras haber estado oculta (o tras cerrar la página) es un retorno observable.
+      if (hidden) classifySignal(student, 'tab_switch', { sessionStatus: session.status });
+      else if (stayedVisible) { student.visible = true; student.hiddenAt = null; student.hiddenSinceMs = null; }
+      else handleReturn(session, student, { reload: true });
       // Si volver le costó el último aviso, queda expulsado y no se une a la sala.
       if (student.status === 'expelled') {
         socket.emit('student:expelled', { reason: student.expelledReason, strikes: student.strikes ?? 0, maxStrikes: session.maxStrikes });
@@ -404,23 +450,27 @@ io.on('connection', (socket) => {
       }
     } else {
       const studentId = `student_${randomUUID().slice(0, 8)}`;
-      student = { studentId, identityKey, guest: true, uid: guest.uid ?? null, rut: guest.rut, socketId: socket.id, name: guest.name, email: guest.email, joinedAt: new Date().toISOString(), leftAt: null, status: 'active', visible: true, hiddenAt: null, disconnectCount: 0, reconnectCount: 0, awaySeconds: 0, strikes: 0, inEpisode: false, expelledReason: null };
+      student = { studentId, identityKey, guest: true, uid: guest.uid ?? null, rut: guest.rut, socketId: socket.id, name: guest.name, email: guest.email, joinedAt: new Date().toISOString(), leftAt: null, status: 'active', visible: true, hiddenAt: null, disconnectCount: 0, reconnectCount: 0, awaySeconds: 0, strikes: 0, expelledReason: null };
       session.students.set(studentId, student);
       logEvent(sessionId, 'student_joined', { student, data: { sessionStatus: session.status, rut: student.rut } });
     }
 
     socket.data = { sessionId, studentId: student.studentId };
     socket.join(stuRoom(session));
-    socket.emit('session:connected', { sessionId, studentId: student.studentId, students: studentView(session).students, session: studentView(session), strikes: { count: student.strikes ?? 0, max: session.maxStrikes } });
+    socket.emit('session:connected', { sessionId, studentId: student.studentId, students: studentView(session).students, session: studentView(session), strikes: { count: student.strikes ?? 0, max: session.maxStrikes }, ready: Boolean(student.ready) });
     io.to(profRoom(session)).emit('student:joined', { ...student, socketId: undefined });
     emitSession(session);
     persistSession(session);
   });
 
-  socket.on('student:event', ({ sessionId, type, message }) => {
+  socket.on('student:event', ({ sessionId, type, message, eventId, tabInstanceId, sequenceNumber } = {}) => {
     const session = sessions.get(sessionId);
     const student = session?.students.get(socket.data.studentId);
-    if (!session || !student || student.socketId !== socket.id || session.status !== 'active') return;
+    if (!session || !student || student.socketId !== socket.id || student.status === 'expelled') return;
+    // Antes del inicio solo se sigue la visibilidad (el bloqueo inicial); el resto de eventos no aplica.
+    const visibilitySignal = type === RETURN_SIGNAL || HIDE_SIGNALS.has(type);
+    if (session.status !== 'active' && !(session.status === 'waiting' && visibilitySignal)) return;
+    if (isDuplicateEvent(socket.data, { eventId, tabInstanceId, sequenceNumber })) return;
 
     // Tope por conexión para que una ráfaga de eventos no sature el panel del profesor.
     const now = Date.now();
@@ -430,20 +480,28 @@ io.on('connection', (socket) => {
     socket.data.eventTimes = recent;
 
     const alertType = Object.hasOwn(ALERT_SEVERITY, type) ? type : 'other';
-    const alert = recordAlert(session, student, alertType, String(message ?? '').slice(0, 200) || 'Actividad registrada');
-    if (alert.strike && student.status === 'active') socket.emit('strikes:update', { count: student.strikes, max: session.maxStrikes, type: alertType });
-    // Seguimiento en vivo: el alumno sigue conectado pero no está mirando la pantalla del examen.
-    if (alertType === 'tab_switch' || alertType === 'screen_lock' || alertType === 'window_blur') {
-      student.visible = false;
-      student.hiddenAt = new Date().toISOString();
-    } else if (alertType === 'returned') {
-      student.visible = true;
-      student.hiddenAt = null;
+    const text = String(message ?? '').slice(0, 200) || 'Actividad registrada';
+    if (HIDE_SIGNALS.has(alertType)) classifySignal(student, alertType, { sessionStatus: session.status });
+    else if (alertType === RETURN_SIGNAL) handleReturn(session, student);
+
+    // En la sala de espera solo se actualiza el estado: el bloqueo inicial no se registra como actividad.
+    if (session.status === 'active') {
+      const alert = recordAlert(session, student, alertType, text);
+      if (alert.strike && student.status === 'active') {
+        socket.emit('strikes:update', { count: student.strikes, max: session.maxStrikes, type: alertType });
+        socket.emit('alert:recorded', alert);
+      }
     }
-    socket.emit('alert:recorded', alert);
     emitSession(session);
   });
-
+  // El alumno avisa que ya guardó su teléfono; solo tiene sentido antes del inicio.
+  socket.on('student:ready', ({ sessionId, ready = true } = {}) => {
+    const session = sessions.get(sessionId);
+    const student = session?.students.get(socket.data?.studentId);
+    if (!session || !student || student.socketId !== socket.id || session.status !== 'waiting' || student.status !== 'active') return;
+    student.ready = Boolean(ready);
+    emitSession(session);
+  });
   socket.on('student:help_request', ({ sessionId }) => {
     const session = sessions.get(sessionId);
     const student = session?.students.get(socket.data?.studentId);
@@ -496,6 +554,7 @@ io.on('connection', (socket) => {
     let changed = false;
     if (student.status === 'active') {
       student.status = 'offline';
+      markAbsent(student);
       student.leftAt = new Date().toISOString();
       student.disconnectCount = (student.disconnectCount ?? 0) + 1;
       if (session.status === 'active') recordAlert(session, student, 'disconnected', 'Se desconectó de la sesión (cerró la pestaña, apagó el equipo o perdió la conexión)');

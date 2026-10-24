@@ -4,7 +4,7 @@ import { io } from 'socket.io-client';
 import { Html5QrcodeScanner } from 'html5-qrcode';
 import { GoogleAuthProvider, OAuthProvider, onIdTokenChanged, signInWithEmailAndPassword, signInWithPopup, signOut } from 'firebase/auth';
 import { firebaseAuth } from './firebase.js';
-import { AreaNav, CourseFields, ProfessorExamsView, ProfileView, StudentExamsView } from './panels.jsx';
+import { AreaNav, CourseFields, IncidentsPanel, ProfessorExamsView, ProfileView, StudentExamsView } from './panels.jsx';
 import { CatalogAdmin } from './catalogAdmin.jsx';
 import { BigTimer, ProjectorOverlay } from './timer.jsx';
 
@@ -321,10 +321,15 @@ function ProfessorDashboard() {
     setSession((current) => ({ ...current, status: 'ended' }));
   }
   function startSession() {
+    const notReady = liveStudents.filter((student) => !student.ready).length;
+    if (notReady > 0 && !window.confirm(`Hay ${notReady} alumno(s) que aún no confirman haber guardado su teléfono. ¿Iniciar el examen igual?`)) return;
     socket.emit('professor:start', { sessionId: session.sessionId, token: auth?.token });
   }
   async function readmit(studentId) {
     await fetch(`${API_URL}/api/sessions/${session.sessionId}/readmit/${studentId}`, { method: 'POST', headers: { Authorization: `Bearer ${auth.token}` } });
+  }
+  async function reviewIncident(incidentId, decision) {
+    await fetch(`${API_URL}/api/sessions/${session.sessionId}/incidents/${incidentId}/review`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${auth.token}` }, body: JSON.stringify({ decision }) });
   }
   function toggleLate() {
     socket.emit('professor:allow_late', { sessionId: session.sessionId, token: auth?.token, allow: !session.allowLate });
@@ -343,6 +348,7 @@ function ProfessorDashboard() {
   const awayStudents = allStudents.filter((student) => student.status === 'offline').sort((a, b) => Date.parse(b.leftAt ?? 0) - Date.parse(a.leftAt ?? 0));
   const expelledStudents = allStudents.filter((student) => student.status === 'expelled');
   const hiddenCount = liveStudents.filter((student) => student.visible === false).length;
+  const readyCount = liveStudents.filter((student) => student.ready).length;
   const isFlagged = (student) => (student.reconnectCount ?? 0) > 0 || (student.disconnectCount ?? 0) > 0;
   const trail = (student) => [
     session.maxStrikes > 0 ? `avisos ${student.strikes ?? 0}/${session.maxStrikes}` : null,
@@ -359,7 +365,7 @@ function ProfessorDashboard() {
       <section className="help-panel"><div className="panel-header"><div><div className="panel-label">SOLICITUDES DE AYUDA</div><h2>{pendingHelp.length ? `${pendingHelp.length} en espera` : 'Nadie ha llamado'}</h2></div><button className="sound-toggle" type="button" onClick={enableHelpSound}>{helpSoundEnabled ? 'Sonido activado · tocar para silenciar' : 'Activar aviso sonoro'}</button></div>{pendingHelp.length ? <div className="help-list">{pendingHelp.map((request) => <div className="help-row" key={request.requestId}><span className="help-dot" /><span className="help-name">{request.studentName}<small>Esperando {formatElapsed(request.requestedAt)}</small></span><button className="button button-dark" type="button" onClick={() => resolveHelp(request.requestId)}>Atender</button></div>)}</div> : <div className="empty-state">Sin solicitudes activas.<br /><span>Cuando un estudiante llame, aparecerá aquí.</span></div>}</section><div className="dashboard-grid"><section className="qr-panel"><div className="panel-label">ACCESO DE ESTUDIANTES</div><div className="qr-frame"><img src={session.qrCode} alt="Código QR de acceso" /></div><strong>{session.status === 'waiting' ? 'Escanea y espera el inicio' : 'Sesión iniciada'}</strong>{session.status === 'active' && <button className="late-toggle" type="button" onClick={toggleLate}>{session.allowLate ? 'Ingreso tardío HABILITADO · tocar para cerrar' : 'Ingreso nuevo cerrado · tocar para habilitar tardíos'}</button>}<p>También puedes compartir este enlace:</p><button className="copy-link" onClick={() => navigator.clipboard?.writeText(session.qrData)}>{session.qrData.replace('http://', '').replace('https://', '')} <span>Copiar</span></button></section><section className="roster-panel">
       <div className="panel-header"><div><div className="panel-label">PRESENCIA</div><h2>{liveStudents.length.toString().padStart(2, '0')} en vivo</h2></div><span className="live-dot">{session.status === 'waiting' ? 'ESPERANDO' : 'EN VIVO'}</span></div>
       {allStudents.length === 0 ? <div className="empty-state">Esperando a tu primera conexión<br /><span>Comparte el código de acceso con la clase.</span></div> : <>
-        <div className="presence-summary"><span><i className="dot dot-live" />{liveStudents.length - hiddenCount} atentos</span><span><i className="dot dot-hidden" />{hiddenCount} con pantalla oculta</span><span><i className="dot dot-away" />{awayStudents.length} ausentes</span>{expelledStudents.length > 0 && <span><i className="dot dot-out" />{expelledStudents.length} expulsados</span>}</div>
+        <div className="presence-summary">{session.status === 'waiting' && <span><i className="dot dot-live" />{readyCount} de {liveStudents.length} listos (teléfono guardado)</span>}<span><i className="dot dot-live" />{liveStudents.length - hiddenCount} atentos</span><span><i className="dot dot-hidden" />{hiddenCount} con pantalla oculta</span><span><i className="dot dot-away" />{awayStudents.length} ausentes</span>{expelledStudents.length > 0 && <span><i className="dot dot-out" />{expelledStudents.length} expulsados</span>}</div>
         {awayStudents.length > 0 && <div className="roster-group"><div className="group-label group-away">AUSENTES · {awayStudents.length}</div><div className="student-list">{awayStudents.map((student) => <div className="student-row student-row-away" key={student.studentId}>
           <span className="avatar">{student.name.charAt(0).toUpperCase()}</span>
           <span className="student-name">{student.name}<small>{student.rut ? `${student.rut} · ` : ''}Desconectado hace {formatElapsed(student.leftAt)}{trail(student) ? ` · ${trail(student)}` : ''}</small></span>
@@ -367,12 +373,12 @@ function ProfessorDashboard() {
         </div>)}</div></div>}
         <div className="roster-group"><div className="group-label group-live">EN VIVO · {liveStudents.length}</div>{liveStudents.length === 0 ? <div className="empty-state">Nadie conectado en este momento.</div> : <div className="student-list">{liveStudents.map((student) => <div className={`student-row${student.visible === false ? ' student-row-hidden' : ''}${isFlagged(student) ? ' student-row-flag' : ''}${session.maxStrikes > 0 && (student.strikes ?? 0) >= session.maxStrikes - 1 ? ' student-row-danger' : ''}`} key={student.studentId}>
           <span className="avatar">{student.name.charAt(0).toUpperCase()}</span>
-          <span className="student-name">{student.name}<small>{student.rut ? `${student.rut} · ` : ''}{student.email ? `${student.email} · ` : ''}Conectado {new Date(student.joinedAt).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}{student.visible === false && student.hiddenAt ? ` · Pantalla oculta hace ${formatElapsed(student.hiddenAt)}` : ''}{trail(student) ? ` · ${trail(student)}` : ''}</small></span>
+          <span className="student-name">{student.name}<small>{student.rut ? `${student.rut} · ` : ''}{student.email ? `${student.email} · ` : ''}Conectado {new Date(student.joinedAt).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}{student.visible === false && student.hiddenAt ? ` · Página oculta hace ${formatElapsed(student.hiddenAt)}` : ''}{student.pendingIncidents ? ` · ${student.pendingIncidents} incidencia(s) por revisar` : ''}{trail(student) ? ` · ${trail(student)}` : ''}</small></span>
           <button className="row-action" onClick={() => expel(student.studentId)} title="Expulsar estudiante">Expulsar</button>
         </div>)}</div>}</div>
         {expelledStudents.length > 0 && <div className="roster-group"><div className="group-label">EXPULSADOS · {expelledStudents.length}</div><div className="student-list">{expelledStudents.map((student) => <div className="student-row student-row-out" key={student.studentId}><span className="avatar">{student.name.charAt(0).toUpperCase()}</span><span className="student-name">{student.name}<small>{student.rut ? `${student.rut} · ` : ''}Expulsado{student.expelledReason === 'max_alerts' ? ` automáticamente (${student.strikes}/${session.maxStrikes} avisos)` : ' por el profesor'}</small></span><button className="row-action" onClick={() => readmit(student.studentId)} title="Devolverle el acceso con el cupo completo">Readmitir</button></div>)}</div></div>}
       </>}
-    </section></div><section className="alerts-panel"><div className="panel-header"><div><div className="panel-label">REGISTRO DE ACTIVIDAD</div><h2>Alertas recientes</h2></div><span className="alert-count">{session.alerts?.length || 0}</span></div>{session.alerts?.length ? <div className="alert-list">{session.alerts.slice(0, 10).map((alert) => <div className="alert-row" key={alert.alertId}><span className={`alert-icon alert-sev-${alert.severity ?? 'info'}${alert.type === 'screen_lock' ? ' alert-icon-lock' : ''}`}>{alert.type === 'screen_lock' ? '●' : '!'}</span><span><strong>{alert.studentName}</strong> · {alert.message}{alert.strike ? <b className="strike-tag"> Aviso {alert.strike}/{alert.maxStrikes}</b> : null}<small>{new Date(alert.timestamp).toLocaleTimeString('es-ES')}</small></span></div>)}</div> : <div className="empty-alerts">No hay actividad sospechosa registrada.</div>}</section></section></Layout>;
+    </section></div><IncidentsPanel incidents={session.incidents} onReview={reviewIncident} /><section className="alerts-panel"><div className="panel-header"><div><div className="panel-label">REGISTRO DE ACTIVIDAD</div><h2>Alertas recientes</h2></div><span className="alert-count">{session.alerts?.length || 0}</span></div>{session.alerts?.length ? <div className="alert-list">{session.alerts.slice(0, 10).map((alert) => <div className="alert-row" key={alert.alertId}><span className={`alert-icon alert-sev-${alert.severity ?? 'info'}${alert.type === 'screen_lock' ? ' alert-icon-lock' : ''}`}>{alert.type === 'screen_lock' ? '●' : '!'}</span><span><strong>{alert.studentName}</strong> · {alert.message}{alert.strike ? <b className="strike-tag"> Aviso {alert.strike}/{alert.maxStrikes}</b> : null}<small>{new Date(alert.timestamp).toLocaleTimeString('es-ES')}</small></span></div>)}</div> : <div className="empty-alerts">No hay actividad sospechosa registrada.</div>}</section></section></Layout>;
 }
 
 function SessionSummary({ session }) {
@@ -434,19 +440,25 @@ function StudentEntry() {
 function StudentScanner() { const navigate = useNavigate(); useEffect(() => { const scanner = new Html5QrcodeScanner('reader', { fps: 10, qrbox: { width: 220, height: 220 } }, false); scanner.render((decoded) => { scanner.clear(); try { navigate(new URL(decoded).pathname); } catch { navigate(decoded); } }, () => {}); return () => scanner.clear().catch(() => {}); }, [navigate]); return <Layout><AreaNav role="estudiante" /><section className="scanner-page"><div className="page-kicker">ENTRADA DE ESTUDIANTE <span>01</span></div><h1>Escanea el<br /><em>código de acceso.</em></h1><p className="lede">Apunta la cámara al QR que muestra tu profesor.</p><div id="reader" className="scanner-box" /></section></Layout>; }
 
 let suppressBlurUntil = 0;
+const TAB_INSTANCE_ID = crypto.randomUUID();
+let eventSequence = 0;
+let pageStayedVisible = false;
+// Verdadero mientras la página estuvo siempre visible desde la última sincronización con el servidor; al recargar parte en falso.
 
 function StudentLive() { const { sessionId } = useParams(); const navigate = useNavigate(); const location = useLocation(); const guest = readGuest(sessionId); const [session, setSession] = useState(null); const [alertCount, setAlertCount] = useState(0); const [now, setNow] = useState(Date.now());
   const offsetRef = useRef(0);
   const [strikes, setStrikes] = useState({ count: 0, max: 0 });
-  const [strikeBanner, setStrikeBanner] = useState(''); const [soundEnabled, setSoundEnabled] = useState(false); const audioContext = useRef(null); const [notice, setNotice] = useState(null); const name = guest?.student?.name || 'Estudiante';
+  const [strikeBanner, setStrikeBanner] = useState(''); const [ready, setReady] = useState(false); const [startBanner, setStartBanner] = useState(false); const prevStatus = useRef(null); const [soundEnabled, setSoundEnabled] = useState(false); const audioContext = useRef(null); const [notice, setNotice] = useState(null); const name = guest?.student?.name || 'Estudiante';
   useEffect(() => { if (!guest) navigate(`/student/${sessionId}`, { replace: true }); }, [sessionId]);
-  useEffect(() => { if (!guest) return; fetch(`${API_URL}/api/sessions/${sessionId}`).then((r) => r.json()).then((data) => { if (data.serverTime) offsetRef.current = Date.parse(data.serverTime) - Date.now(); setStrikes((current) => ({ ...current, max: data.maxStrikes ?? current.max })); setSession(data); }); const onConnected = (data) => { if (data.session?.serverTime) offsetRef.current = Date.parse(data.session.serverTime) - Date.now(); if (data.strikes) setStrikes(data.strikes); setSession((current) => ({ ...current, ...(data.session ?? {}), students: data.students })); }; const onUpdate = (data) => { if (data.serverTime) offsetRef.current = Date.parse(data.serverTime) - Date.now(); setSession(data); }; const onExpelled = (info) => { setNotice({ title: 'Fuiste expulsado de la sesión', text: info?.reason === 'max_alerts' ? `Llegaste al límite de ${info.maxStrikes} avisos por salir de la pantalla del examen u otras acciones no permitidas. Si crees que fue un error, habla con tu profesor.` : 'El profesor te expulsó de esta sesión.', retry: false }); socket.disconnect(); }; const onEnded = () => setSession((current) => ({ ...current, status: 'ended' })); const onAlert = (alert) => { setAlertCount((value) => value + 1); playAlertSound(); showAlertNotification(alert); }; socket.on('session:connected', onConnected); socket.on('session:updated', onUpdate); socket.on('student:expelled', onExpelled); socket.on('session:ended', onEnded); socket.on('alert:recorded', onAlert); const onStrikes = ({ count, max }) => { setStrikes({ count, max }); setStrikeBanner(`Aviso ${count} de ${max}. Te quedan ${Math.max(0, max - count)}. Permanece en la pantalla del examen.`); };
+  useEffect(() => { if (!guest) return; fetch(`${API_URL}/api/sessions/${sessionId}`).then((r) => r.json()).then((data) => { if (data.serverTime) offsetRef.current = Date.parse(data.serverTime) - Date.now(); setStrikes((current) => ({ ...current, max: data.maxStrikes ?? current.max })); setSession(data); }); const onConnected = (data) => { pageStayedVisible = !document.hidden; setReady(Boolean(data.ready)); if (data.session?.serverTime) offsetRef.current = Date.parse(data.session.serverTime) - Date.now(); if (data.strikes) setStrikes(data.strikes); setSession((current) => ({ ...current, ...(data.session ?? {}), students: data.students })); }; const onUpdate = (data) => { if (data.serverTime) offsetRef.current = Date.parse(data.serverTime) - Date.now(); setSession(data); }; const onExpelled = (info) => { setNotice({ title: 'Fuiste expulsado de la sesión', text: info?.reason === 'max_alerts' ? `Llegaste al límite de ${info.maxStrikes} avisos por salir de la pantalla del examen u otras acciones no permitidas. Si crees que fue un error, habla con tu profesor.` : 'El profesor te expulsó de esta sesión.', retry: false }); socket.disconnect(); }; const onEnded = () => setSession((current) => ({ ...current, status: 'ended' })); const onAlert = (alert) => { setAlertCount((value) => value + 1); playAlertSound(); showAlertNotification(alert); }; socket.on('session:connected', onConnected); socket.on('session:updated', onUpdate); socket.on('student:expelled', onExpelled); socket.on('session:ended', onEnded); socket.on('alert:recorded', onAlert); const onStrikes = ({ count, max }) => { setStrikes({ count, max }); setStrikeBanner(`Aviso ${count} de ${max}. Te quedan ${Math.max(0, max - count)}. Permanece en la pantalla del examen.`); };
     socket.on('strikes:update', onStrikes);
-    const join = () => socket.emit('student:join', { sessionId, guestToken: guest.token }); const onReplaced = () => { setNotice({ title: 'Sesión abierta en otro dispositivo', text: 'Esta sesión se abrió desde otro dispositivo o pestaña, por lo que esta quedó cerrada. El profesor fue avisado.' }); socket.disconnect(); }; const onSessionError = ({ message }) => setNotice({ title: 'No se pudo entrar a la sesión', text: message, retry: !/expulsado/.test(message) }); socket.on('connect', join); socket.on('student:replaced', onReplaced); socket.on('session:error', onSessionError); socket.connect(); if ('Notification' in window && Notification.permission === 'default') { suppressBlurUntil = Date.now() + 60_000; Promise.resolve(Notification.requestPermission()).finally(() => { suppressBlurUntil = Date.now() + 2000; }); } return () => { socket.off('session:connected', onConnected); socket.off('session:updated', onUpdate); socket.off('student:expelled', onExpelled); socket.off('session:ended', onEnded); socket.off('alert:recorded', onAlert); socket.off('strikes:update', onStrikes); socket.off('connect', join); socket.off('student:replaced', onReplaced); socket.off('session:error', onSessionError); socket.disconnect(); }; }, [sessionId]);
+    const join = () => socket.emit('student:join', { sessionId, guestToken: guest.token, hidden: document.hidden, stayedVisible: pageStayedVisible && !document.hidden }); const onReplaced = () => { setNotice({ title: 'Sesión abierta en otro dispositivo', text: 'Esta sesión se abrió desde otro dispositivo o pestaña, por lo que esta quedó cerrada. El profesor fue avisado.' }); socket.disconnect(); }; const onSessionError = ({ message }) => setNotice({ title: 'No se pudo entrar a la sesión', text: message, retry: !/expulsado/.test(message) }); socket.on('connect', join); socket.on('student:replaced', onReplaced); socket.on('session:error', onSessionError); socket.connect(); if ('Notification' in window && Notification.permission === 'default') { suppressBlurUntil = Date.now() + 60_000; Promise.resolve(Notification.requestPermission()).finally(() => { suppressBlurUntil = Date.now() + 2000; }); } return () => { socket.off('session:connected', onConnected); socket.off('session:updated', onUpdate); socket.off('student:expelled', onExpelled); socket.off('session:ended', onEnded); socket.off('alert:recorded', onAlert); socket.off('strikes:update', onStrikes); socket.off('connect', join); socket.off('student:replaced', onReplaced); socket.off('session:error', onSessionError); socket.disconnect(); }; }, [sessionId]);
   function enableSound() { if (audioContext.current) { audioContext.current.close?.(); audioContext.current = null; setSoundEnabled(false); return; } const AudioContextClass = window.AudioContext || window.webkitAudioContext; if (!AudioContextClass) return; audioContext.current = new AudioContextClass(); audioContext.current.resume(); setSoundEnabled(true); }
   function playAlertSound() { if (!audioContext.current) return; const oscillator = audioContext.current.createOscillator(); const gain = audioContext.current.createGain(); oscillator.frequency.value = 880; gain.gain.setValueAtTime(0.18, audioContext.current.currentTime); gain.gain.exponentialRampToValueAtTime(0.001, audioContext.current.currentTime + 0.35); oscillator.connect(gain); gain.connect(audioContext.current.destination); oscillator.start(); oscillator.stop(audioContext.current.currentTime + 0.35); }
   function showAlertNotification(alert) { if ('Notification' in window && Notification.permission === 'granted') new Notification('Actividad registrada', { body: alert.message }); }
   useEffect(() => { const timer = setInterval(() => setNow(Date.now() + offsetRef.current), 1000); return () => clearInterval(timer); }, []);
+  useEffect(() => { const status = session?.status; const started = prevStatus.current === 'waiting' && status === 'active'; prevStatus.current = status ?? null; if (!started || document.hidden) return undefined; setStartBanner(true); const hide = setTimeout(() => setStartBanner(false), (session?.graceSeconds ?? 30) * 1000); return () => clearTimeout(hide); }, [session?.status]);
+  function markReady() { socket.emit('student:ready', { sessionId, ready: true }); setReady(true); }
   useEffect(() => { if (!strikeBanner) return undefined; const hide = setTimeout(() => setStrikeBanner(''), 9000); return () => clearTimeout(hide); }, [strikeBanner]);
   useEffect(() => {
     if (!guest) return undefined;
@@ -457,7 +469,7 @@ function StudentLive() { const { sessionId } = useParams(); const navigate = use
       const now = Date.now();
       if (now - (lastSent[type] ?? 0) < minGapMs) return;
       lastSent[type] = now;
-      socket.emit('student:event', { sessionId, type, message });
+      socket.emit('student:event', { sessionId, type, message, eventId: crypto.randomUUID(), tabInstanceId: TAB_INSTANCE_ID, sequenceNumber: eventSequence++ });
     };
     let lastInteraction = Date.now();
     let hiddenAt = null;
@@ -470,16 +482,15 @@ function StudentLive() { const { sessionId } = useParams(); const navigate = use
       if (document.hidden) {
         cancelBlur();
         blurReported = false;
-        const idleMs = Date.now() - lastInteraction;
         hiddenAt = Date.now();
-        // Solo un dispositivo táctil puede bloquearse sin que sea una salida; en computador no se perdona.
-        const touchDevice = window.matchMedia?.('(pointer: coarse)').matches;
-        if (touchDevice && idleMs >= 5000) report('screen_lock', 'Ocultó la pantalla tras un rato sin tocarla (posible bloqueo o cierre)');
-        else report('tab_switch', 'Cambió de pestaña o aplicación');
+        pageStayedVisible = false;
+        // El navegador no distingue bloqueo, cambio de app o de pestaña: se informa solo que la página se ocultó.
+        report('tab_switch', 'Página oculta (bloqueo de pantalla, cambio de app o de pestaña)', 0);
       } else if (hiddenAt) {
         const seconds = Math.round((Date.now() - hiddenAt) / 1000);
         hiddenAt = null;
-        report('returned', `Volvió a la pantalla del examen tras ${seconds} s`);
+        report('returned', `Retorno detectado tras ${seconds} s con la página oculta`, 0);
+        if (socket.connected) pageStayedVisible = true;
       }
     };
     // Perder el foco solo cuenta si se mantiene un momento: diálogos del sistema, avisos de permisos o un clic
@@ -493,14 +504,16 @@ function StudentLive() { const { sessionId } = useParams(); const navigate = use
         blurTimer = null;
         if (document.hidden || document.hasFocus() || Date.now() < suppressBlurUntil) return;
         blurReported = true;
-        report('window_blur', 'Perdió foco de ventana', 0);
+        pageStayedVisible = false;
+        report('window_blur', 'La ventana perdió el foco', 0);
       }, 1500);
     };
     const focus = () => {
       cancelBlur();
       if (!blurReported) return;
       blurReported = false;
-      report('returned', 'Volvió a la ventana del examen', 0);
+      report('returned', 'Retorno detectado: la ventana recuperó el foco', 0);
+      if (socket.connected) pageStayedVisible = true;
     };
     const keydown = (event) => {
       const key = event.key?.toLowerCase();
@@ -519,7 +532,8 @@ function StudentLive() { const { sessionId } = useParams(); const navigate = use
       [document, 'paste', (event) => { if (!isEditable(event.target)) report('paste', 'Pegó contenido en la página'); }],
       [document, 'contextmenu', () => report('context_menu', 'Abrió el menú contextual (clic derecho o pulsación larga)')],
       [window, 'beforeprint', () => report('print', 'Intentó imprimir la página')],
-      [window, 'orientationchange', () => report('orientation_change', 'Giró la pantalla del dispositivo', 2000)]
+      [window, 'orientationchange', () => report('orientation_change', 'Giró la pantalla del dispositivo', 2000)],
+      [window, 'pagehide', (event) => { if (!event.persisted) report('page_closed', 'Cerró o recargó la página del examen', 0); }]
     ];
     listeners.forEach(([target, eventName, handler]) => target.addEventListener(eventName, handler));
     const idleTimer = setInterval(() => {
@@ -536,7 +550,7 @@ function StudentLive() { const { sessionId } = useParams(); const navigate = use
   const waiting = session?.status === 'waiting';
   if (notice) return <div className="live-shell"><header className="live-header"><Brand /><span className="secure-label">Sesión cerrada</span></header><section className="live-content ended-screen"><div className="live-kicker">{session?.examName || 'Sesión de evaluación'}</div><h1>{notice.title}</h1><p className="live-intro">{notice.text}</p>{notice.retry && <Link className="button button-dark" to={`/student/${sessionId}`} onClick={() => localStorage.removeItem(guestStorageKey(sessionId))}>Volver a registrarme <span>→</span></Link>}</section></div>;
   if (session?.status === 'ended') return <div className="live-shell"><header className="live-header"><Brand /><span className="secure-label">Sesión cerrada</span></header><section className="live-content ended-screen"><div className="live-kicker">{session.examName}</div><h1>Examen<br /><em>finalizado.</em></h1><p className="live-intro">El profesor ha cerrado esta sesión. Tus respuestas y tu registro han quedado guardados.</p></section></div>;
-  return <div className="live-shell"><header className="live-header"><Brand /><span className="secure-label"><i /> Sesión protegida</span></header><section className="live-content"><div className="live-kicker">{session?.examName || 'Sesión de evaluación'} <span>· {waiting ? 'ESPERANDO INICIO' : 'EN CURSO'}</span></div><h1>Hola, {name.split(' ')[0]}.</h1><p className="live-intro">{waiting ? 'El profesor aún no ha iniciado la evaluación. Permanece en esta pantalla.' : 'Esta pantalla permanece activa mientras realizas tu evaluación.'}</p><div className="timer-card"><span>{waiting ? 'TIEMPO PENDIENTE' : 'TIEMPO RESTANTE'}</span><strong>{formatted}</strong><div className="timer-track"><i style={{ width: session?.status === 'active' ? `${Math.max(0, Math.min(100, (remainingSeconds / (session.duration * 60)) * 100))}%` : '0%' }} /></div></div><div className="live-stats"><div><strong>{session?.students?.filter((s) => s.status === 'active').length || 1}</strong><span>compañeros<br />presentes</span></div>{strikes.max > 0 ? <div className={strikes.max - strikes.count <= 1 ? 'stat-danger' : ''}><strong>{Math.max(0, strikes.max - strikes.count)}</strong><span>avisos<br />restantes</span></div> : <div><strong>{alertCount}</strong><span>eventos<br />registrados</span></div>}</div>{strikeBanner && <div className="strike-banner" role="alert">{strikeBanner}</div>}<div className="live-notice"><span>◉</span><p><strong>{waiting ? 'Conectado correctamente.' : 'Tu sesión está siendo supervisada.'}</strong><br />{waiting ? 'Recibirás el inicio en esta misma pantalla.' : 'Permanece en esta pestaña hasta entregar tu evaluación.'}{strikes.max > 0 ? ` Cada salida de la pantalla o copiar y pegar cuenta como aviso (bloquear el teléfono no): con ${strikes.max} avisos serás expulsado.` : ''}</p></div><button className="sound-toggle" onClick={enableSound}>{soundEnabled ? 'Sonido activado · tocar para silenciar' : 'Activar sonido de alertas'}</button></section></div>;
+  return <div className="live-shell"><header className="live-header"><Brand /><span className="secure-label"><i /> Sesión protegida</span></header><section className="live-content"><div className="live-kicker">{session?.examName || 'Sesión de evaluación'} <span>· {waiting ? 'ESPERANDO INICIO' : 'EN CURSO'}</span></div><h1>Hola, {name.split(' ')[0]}.</h1><p className="live-intro">{waiting ? 'El profesor aún no ha iniciado la evaluación. Permanece en esta pantalla.' : 'Esta pantalla permanece activa mientras realizas tu evaluación.'}</p><div className="timer-card"><span>{waiting ? 'TIEMPO PENDIENTE' : 'TIEMPO RESTANTE'}</span><strong>{formatted}</strong><div className="timer-track"><i style={{ width: session?.status === 'active' ? `${Math.max(0, Math.min(100, (remainingSeconds / (session.duration * 60)) * 100))}%` : '0%' }} /></div></div><div className="live-stats"><div><strong>{session?.students?.filter((s) => s.status === 'active').length || 1}</strong><span>compañeros<br />presentes</span></div>{strikes.max > 0 ? <div className={strikes.max - strikes.count <= 1 ? 'stat-danger' : ''}><strong>{Math.max(0, strikes.max - strikes.count)}</strong><span>avisos<br />restantes</span></div> : <div><strong>{alertCount}</strong><span>eventos<br />registrados</span></div>}</div>{startBanner && <div className="strike-banner" role="alert">La evaluación comenzó: bloquea y guarda tu teléfono ahora. Tienes {session?.graceSeconds ?? 30} s sin que cuente como incidencia.</div>}{strikeBanner && <div className="strike-banner" role="alert">{strikeBanner}</div>}{waiting && <button className="button button-dark" type="button" disabled={ready} onClick={markReady}>{ready ? 'Listo · bloquea tu teléfono y espera el inicio' : 'Ya guardé mi teléfono'}</button>}<div className="live-notice"><span>◉</span><p><strong>{waiting ? 'Conectado correctamente.' : 'Tu sesión está siendo supervisada.'}</strong><br />{waiting ? 'Recibirás el inicio en esta misma pantalla.' : 'Permanece en esta pestaña hasta entregar tu evaluación.'}{strikes.max > 0 ? ` Antes del inicio, pulsa «Ya guardé mi teléfono», bloquéalo y guárdalo: no necesitas mantener la pantalla encendida y eso no cuenta como falta. Si vuelves a esta pantalla durante el examen, tu profesor recibirá una alerta para revisar; solo él puede confirmarla. Copiar y pegar cuenta como aviso: con ${strikes.max} avisos serás expulsado.` : ''}</p></div><button className="sound-toggle" onClick={enableSound}>{soundEnabled ? 'Sonido activado · tocar para silenciar' : 'Activar sonido de alertas'}</button></section></div>;
 }
 
 const STATUS_LABELS = { pending: 'Pendiente', approved: 'Aprobado', rejected: 'Rechazada', disabled: 'Desactivado' };
