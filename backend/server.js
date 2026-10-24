@@ -337,8 +337,13 @@ app.post('/api/sessions/:sessionId/incidents/:incidentId/review', requireAuth('p
   persistSession(session);
   res.json({ success: true, incident });
 });
-function startSession(session, actor) {
+// Alumnos registrados que no confirmaron haber guardado el teléfono. Cuenta a los desconectados: con el teléfono bloqueado la conexión cae.
+const notReadyStudents = (session) => [...session.students.values()].filter((student) => student.status !== 'expelled' && !student.ready);
+
+function startSession(session, actor, { force = false } = {}) {
   if (session.status !== 'waiting') return false;
+  const pending = notReadyStudents(session);
+  if (pending.length > 0 && !force) return 'not_ready';
   const startedAt = new Date();
   session.status = 'active';
   session.startedAt = startedAt.toISOString();
@@ -346,7 +351,7 @@ function startSession(session, actor) {
   for (const student of session.students.values()) applyStartGrace(student, startedAt.getTime());
   emitSession(session);
   persistSession(session);
-  logEvent(session.sessionId, 'session_started', { actor, data: { endsAt: session.endsAt } });
+  logEvent(session.sessionId, 'session_started', { actor, data: { endsAt: session.endsAt, forced: pending.length > 0, notReady: pending.map((student) => student.name) } });
   return true;
 }
 
@@ -382,14 +387,16 @@ io.on('connection', (socket) => {
     socket.emit('session:updated', publicSession(session));
   });
 
-  socket.on('professor:start', async ({ sessionId, token }) => {
+  socket.on('professor:start', async ({ sessionId, token, force = false }) => {
     const session = sessions.get(sessionId);
     if (!session) return socket.emit('session:error', { message: 'Sesión no encontrada.' });
     const auth = await authFromToken(token);
     if (!auth || !['profesor', 'admin'].includes(auth.role) || auth.email !== session.professorEmail) {
       return socket.emit('session:error', { message: 'No autorizado.' });
     }
-    if (!startSession(session, auth)) return socket.emit('session:error', { message: 'La sesión ya fue iniciada o finalizada.' });
+    const started = startSession(session, auth, { force: force === true });
+    if (started === 'not_ready') return socket.emit('session:error', { message: 'Aún hay alumnos que no confirman haber guardado su teléfono. Espera a que estén listos o usa «Iniciar de todos modos».' });
+    if (!started) return socket.emit('session:error', { message: 'La sesión ya fue iniciada o finalizada.' });
   });
 
   socket.on('professor:allow_late', async ({ sessionId, token, allow }) => {
