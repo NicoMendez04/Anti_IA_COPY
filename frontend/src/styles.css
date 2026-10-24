@@ -62,3 +62,5 @@
 .student-row-danger{background:#fbe3dc!important;border-left:3px solid #d0442a!important}.strike-tag{color:#a34234;font-size:11px;margin-left:4px}.strike-count{color:var(--muted)}
 .strike-banner{background:#fdf1cf;border:1px solid #e0b83e;color:#6b4e00;padding:12px 14px;margin:14px 0;font-size:13px;font-weight:600;line-height:1.5}.stat-danger strong{color:#d0442a}
 .timer-card strong{font-size:clamp(64px,20vw,132px)!important;font-variant-numeric:tabular-nums}
+
+.lock-overlay{position:fixed;inset:0;z-index:50;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:32px;text-align:center;background:#0d0d0c;color:#f1efe9}.lock-overlay strong{font-size:30px}.lock-overlay p{max-width:420px;margin:0;color:#c9c6bc;line-height:1.5}.lock-overlay button{margin-top:12px;padding:10px 18px;border:1px solid #555;border-radius:8px;background:transparent;color:#c9c6bc;font:inherit;cursor:pointer}

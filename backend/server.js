@@ -502,6 +502,7 @@ io.on('connection', (socket) => {
     const student = session?.students.get(socket.data?.studentId);
     if (!session || !student || student.socketId !== socket.id || session.status !== 'waiting' || student.status !== 'active') return;
     student.ready = Boolean(ready);
+    student.readyAt = student.ready ? new Date().toISOString() : null;
     emitSession(session);
   });
   socket.on('student:help_request', ({ sessionId }) => {

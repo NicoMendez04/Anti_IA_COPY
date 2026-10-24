@@ -31,7 +31,7 @@ export function classifySignal(student, signal, { sessionStatus, now = Date.now(
   student.hiddenAt = null;
   student.hiddenSinceMs = null;
   // Volver a la pantalla antes del inicio deshace el "listo": el alumno debe confirmarlo de nuevo.
-  if (sessionStatus === 'waiting') student.ready = false;
+  if (sessionStatus === 'waiting') { student.ready = false; student.readyAt = null; }
   if (!wasHidden || sessionStatus !== 'active') return { incident: null, grouped: false };
   if (student.graceUntilMs && now < student.graceUntilMs) return { incident: null, grouped: false, inGrace: true };
   if (student.lastIncidentAtMs && now - student.lastIncidentAtMs < GROUP_WINDOW_MS) {
