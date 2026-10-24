@@ -21,8 +21,6 @@ export function classifySignal(student, signal, { sessionStatus, now = Date.now(
     if (student.visible !== false) student.hiddenSinceMs = now;
     student.visible = false;
     student.hiddenAt ??= new Date(now).toISOString();
-    // Ocultar la página antes del inicio equivale a decir "ya guardé mi teléfono".
-    if (sessionStatus === 'waiting') student.ready = true;
     return { incident: null, grouped: false };
   }
   if (signal !== RETURN_SIGNAL) return { incident: null, grouped: false };
@@ -32,6 +30,8 @@ export function classifySignal(student, signal, { sessionStatus, now = Date.now(
   student.visible = true;
   student.hiddenAt = null;
   student.hiddenSinceMs = null;
+  // Volver a la pantalla antes del inicio deshace el "listo": el alumno debe confirmarlo de nuevo.
+  if (sessionStatus === 'waiting') student.ready = false;
   if (!wasHidden || sessionStatus !== 'active') return { incident: null, grouped: false };
   if (student.graceUntilMs && now < student.graceUntilMs) return { incident: null, grouped: false, inGrace: true };
   if (student.lastIncidentAtMs && now - student.lastIncidentAtMs < GROUP_WINDOW_MS) {

@@ -481,9 +481,11 @@ io.on('connection', (socket) => {
 
     const alertType = Object.hasOwn(ALERT_SEVERITY, type) ? type : 'other';
     const text = String(message ?? '').slice(0, 200) || 'Actividad registrada';
+    const wasReady = Boolean(student.ready);
     if (HIDE_SIGNALS.has(alertType)) classifySignal(student, alertType, { sessionStatus: session.status });
     else if (alertType === RETURN_SIGNAL) handleReturn(session, student);
 
+    if (wasReady !== Boolean(student.ready)) socket.emit('student:ready_state', { ready: Boolean(student.ready) });
     // En la sala de espera solo se actualiza el estado: el bloqueo inicial no se registra como actividad.
     if (session.status === 'active') {
       const alert = recordAlert(session, student, alertType, text);

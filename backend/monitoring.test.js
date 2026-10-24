@@ -71,10 +71,14 @@ test('una desconexión cuenta como ausencia: al reconectar con la página visibl
   assert.equal(result.incident.type, 'page_reload');
 });
 
-test('ocultar la página antes del inicio marca al alumno como listo', () => {
-  const student = fresh();
+test('ocultar la página no marca al alumno como listo y volver antes del inicio lo deshace', () => {
+  const student = { ...fresh(), ready: true };
+  const other = fresh();
+  classifySignal(other, 'tab_switch', { sessionStatus: 'waiting', now: 1000 });
+  assert.notEqual(other.ready, true);
   classifySignal(student, 'tab_switch', { sessionStatus: 'waiting', now: 1000 });
-  assert.equal(student.ready, true);
+  classifySignal(student, 'returned', { sessionStatus: 'waiting', now: 2000 });
+  assert.equal(student.ready, false);
 });
 
 test('el margen de gracia al iniciar solo cubre a quien tenía la pantalla visible', () => {
