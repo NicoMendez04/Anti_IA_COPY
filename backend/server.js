@@ -499,7 +499,11 @@ io.on('connection', (socket) => {
     if (HIDE_SIGNALS.has(alertType)) classifySignal(student, alertType, { sessionStatus: session.status, sinceInteractionMs: typeof sinceInteractionMs === 'number' ? sinceInteractionMs : null });
     else if (alertType === RETURN_SIGNAL) handleReturn(session, student);
 
-    if (wasReady !== Boolean(student.ready)) socket.emit('student:ready_state', { ready: Boolean(student.ready) });
+    if (wasReady !== Boolean(student.ready)) {
+      socket.emit('student:ready_state', { ready: Boolean(student.ready) });
+      // Un alumno que ya había confirmado y volvió a usar el teléfono antes del inicio.
+      if (wasReady && session.status === 'waiting') notifyProfessor(session, { studentName: student.name, type: 'ready_lost' });
+    }
     // En la sala de espera solo se actualiza el estado: el bloqueo inicial no se registra como actividad.
     if (session.status === 'active') {
       const alert = recordAlert(session, student, alertType, text);
