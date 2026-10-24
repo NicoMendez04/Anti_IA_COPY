@@ -121,7 +121,10 @@ function groupIntoLastIncident(session, student) {
 
 // Un retorno o recarga observado: actualiza visibilidad y, si corresponde, abre la incidencia.
 function handleReturn(session, student, { reload = false } = {}) {
+  const wasReady = Boolean(student.ready);
   const result = classifySignal(student, RETURN_SIGNAL, { sessionStatus: session.status, reload });
+  // Un alumno que ya había confirmado y vuelve a usar el teléfono antes del inicio.
+  if (wasReady && !student.ready && session.status === 'waiting') recordAlert(session, student, 'ready_lost', 'Había confirmado su teléfono guardado y volvió a la pantalla antes del inicio');
   if (result.incident) openIncident(session, student, result.incident, session.status);
   else if (result.grouped) groupIntoLastIncident(session, student);
   return result;
@@ -141,7 +144,7 @@ const PRESENCE_ALERTS = new Set(['disconnected', 'reconnected', 'second_device']
 
 function recordAlert(session, student, type, message, options) {
   const counted = applyStrike(session, student, type, options);
-  const alert = { alertId: randomUUID(), studentId: student.studentId, studentName: student.name, type, severity: options?.severity ?? ALERT_SEVERITY[type] ?? 'info', timestamp: new Date().toISOString(), message, strike: counted ? student.strikes : null,   maxStrikes: session.maxStrikes, sound: session.status === 'active' || type === 'ready_lost' };
+  const alert = { alertId: randomUUID(), studentId: student.studentId, studentName: student.name, type, severity: options?.severity ?? ALERT_SEVERITY[type] ?? 'info', timestamp: new Date().toISOString(), message, strike: counted ? student.strikes : null,   maxStrikes: session.maxStrikes, sound: session.status !== 'ended' };
   session.alerts.unshift(alert);
   io.to(profRoom(session)).emit('alert:triggered', alert);
     if (alert.sound) notifyProfessor(session, { studentName: student.name, type });
@@ -500,10 +503,6 @@ io.on('connection', (socket) => {
 
     if (wasReady !== Boolean(student.ready)) {
       socket.emit('student:ready_state', { ready: Boolean(student.ready) });
-      // Un alumno que ya había confirmado y volvió a usar el teléfono antes del inicio.
-      if (wasReady && session.status === 'waiting') {
-        recordAlert(session, student, 'ready_lost', 'Había confirmado su teléfono guardado y volvió a la pantalla antes del inicio');
-      }
     }
     // Todo movimiento queda en el panel; antes del inicio solo se registra, sin avisos ni sanciones.
     const alert = recordAlert(session, student, alertType, text);
