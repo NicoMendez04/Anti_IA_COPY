@@ -142,9 +142,24 @@ function expelStudent(session, student, { reason, actor = null }) {
 
 const PRESENCE_ALERTS = new Set(['disconnected', 'reconnected', 'second_device']);
 
+const LOCK_ALERTS = new Set(['tab_switch', 'window_blur', 'screen_lock', 'page_closed', 'disconnected']);
+const WAKE_ALERTS = new Set(['returned', 'reconnected']);
+
+// Antes del inicio, el primer bloqueo del alumno es el esperado y no suena; suena desde que vuelve a encender el equipo.
+function soundsFor(session, student, type) {
+  if (session.status === 'ended') return false;
+  if (session.status !== 'waiting') return true;
+  const phase = student.initialLock ?? 'none';
+  if (phase === 'done') return true;
+  if (LOCK_ALERTS.has(type)) { student.initialLock = 'locked'; return false; }
+  if (WAKE_ALERTS.has(type)) { student.initialLock = 'done'; return true; }
+  return true;
+}
+
 function recordAlert(session, student, type, message, options) {
   const counted = applyStrike(session, student, type, options);
-  const alert = { alertId: randomUUID(), studentId: student.studentId, studentName: student.name, type, severity: options?.severity ?? ALERT_SEVERITY[type] ?? 'info', timestamp: new Date().toISOString(), message, strike: counted ? student.strikes : null,   maxStrikes: session.maxStrikes, sound: session.status !== 'ended' };
+  const sound = soundsFor(session, student, type);
+  const alert = { alertId: randomUUID(), studentId: student.studentId, studentName: student.name, type, severity: options?.severity ?? ALERT_SEVERITY[type] ?? 'info', timestamp: new Date().toISOString(), message, strike: counted ? student.strikes : null,   maxStrikes: session.maxStrikes, sound };
   session.alerts.unshift(alert);
   io.to(profRoom(session)).emit('alert:triggered', alert);
     if (alert.sound) notifyProfessor(session, { studentName: student.name, type });
