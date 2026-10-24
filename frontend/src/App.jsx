@@ -254,6 +254,8 @@ function ProfessorDashboard() {
   const [now, setNow] = useState(new Date());
   const clockOffset = useRef(0);
   const [projecting, setProjecting] = useState(false);
+  const [soundOn, setSoundOn] = useState(false);
+  const audioCtx = useRef(null);
 
   useEffect(() => { const timer = setInterval(() => setNow(new Date(Date.now() + clockOffset.current)), 1000); return () => clearInterval(timer); }, []);
   useEffect(() => {
@@ -261,11 +263,34 @@ function ProfessorDashboard() {
     const update = (next) => { if (next.serverTime) clockOffset.current = Date.parse(next.serverTime) - Date.now(); setSession((current) => ({ ...current, ...next })); };
     socket.on('session:updated', update);
     socket.on('alert:triggered', (alert) => setSession((current) => ({ ...current, alerts: [alert, ...(current.alerts || [])] })));
+    socket.on('activity:notify', playAlertSound);
     socket.connect();
     socket.emit('professor:join', { sessionId: session.sessionId, token: auth?.token });
-    return () => { socket.off('session:updated', update); socket.disconnect(); };
+    return () => { socket.off('session:updated', update); socket.off('activity:notify', playAlertSound); socket.disconnect(); };
   }, [session?.sessionId]);
 
+  function toggleSound() {
+    if (audioCtx.current) { audioCtx.current.close?.(); audioCtx.current = null; setSoundOn(false); return; }
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    audioCtx.current = new Ctx();
+    audioCtx.current.resume();
+    setSoundOn(true);
+    playAlertSound();
+  }
+  function playAlertSound() {
+    const ctx = audioCtx.current;
+    if (!ctx) return;
+    [660, 880, 660].forEach((freq, i) => {
+      const osc = ctx.createOscillator(); const gain = ctx.createGain();
+      osc.frequency.value = freq;
+      const start = ctx.currentTime + i * 0.18;
+      gain.gain.setValueAtTime(0.3, start);
+      gain.gain.exponentialRampToValueAtTime(0.001, start + 0.3);
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.start(start); osc.stop(start + 0.3);
+    });
+  }
   function formatElapsed(iso) {
     const seconds = Math.max(0, Math.floor((now.getTime() - Date.parse(iso)) / 1000));
     const m = Math.floor(seconds / 60);
@@ -330,7 +355,7 @@ function ProfessorDashboard() {
   if (session.status === 'ended') return <SessionSummary session={session} />;
   const remainingSeconds = session.endsAt ? Math.max(0, Math.ceil((Date.parse(session.endsAt) - now.getTime()) / 1000)) : 0;
   const remainingLabel = `${String(Math.floor(remainingSeconds / 60)).padStart(2, '0')}:${String(remainingSeconds % 60).padStart(2, '0')}`;
-  return <Layout><section className="dashboard"><div className="dashboard-head"><div><div className="page-kicker">SALA EN DIRECTO <span>/{session.sessionId.slice(-4).toUpperCase()}</span></div><h1>{session.examName}</h1><p>Creada por {session.professorName} · {session.status === 'active' ? `Tiempo restante ${remainingLabel}` : session.status === 'waiting' ? 'Esperando inicio' : 'Sesión finalizada'}</p></div><div className="head-actions">{pendingHelp.length > 0 && <span className="help-badge">✋ {pendingHelp.length} en espera</span>}<span className={`status-chip ${session.status}`}>{session.status === 'active' ? '● En curso' : session.status === 'waiting' ? '◌ Lista para iniciar' : '○ Finalizada'}</span>{session.status === 'waiting' && <button className="button button-dark" disabled={notReadyStudents.length > 0} title={notReadyStudents.length ? 'Todos los alumnos deben confirmar que guardaron su teléfono' : ''} onClick={() => startSession(false)}>Iniciar examen <span>→</span></button>}{session.status === 'waiting' && notReadyStudents.length > 0 && <button className="button" type="button" onClick={() => startSession(true)}>Iniciar de todos modos ({notReadyStudents.length} sin confirmar)</button>}{session.status === 'active' && <button className="button button-danger" onClick={endSession}>Finalizar sesión</button>}</div></div><BigTimer session={session} now={now} onProject={() => setProjecting(true)} />
+  return <Layout><section className="dashboard"><div className="dashboard-head"><div><div className="page-kicker">SALA EN DIRECTO <span>/{session.sessionId.slice(-4).toUpperCase()}</span></div><h1>{session.examName}</h1><p>Creada por {session.professorName} · {session.status === 'active' ? `Tiempo restante ${remainingLabel}` : session.status === 'waiting' ? 'Esperando inicio' : 'Sesión finalizada'}</p></div><div className="head-actions"><button className={`sound-toggle ${soundOn ? '' : 'sound-off'}`} type="button" onClick={toggleSound}>{soundOn ? '🔔 Sonido activado' : '🔕 Activar sonido de avisos'}</button><span className={`status-chip ${session.status}`}>{session.status === 'active' ? '● En curso' : session.status === 'waiting' ? '◌ Lista para iniciar' : '○ Finalizada'}</span>{session.status === 'waiting' && <button className="button button-dark" disabled={notReadyStudents.length > 0} title={notReadyStudents.length ? 'Todos los alumnos deben confirmar que guardaron su teléfono' : ''} onClick={() => startSession(false)}>Iniciar examen <span>→</span></button>}{session.status === 'waiting' && notReadyStudents.length > 0 && <button className="button" type="button" onClick={() => startSession(true)}>Iniciar de todos modos ({notReadyStudents.length} sin confirmar)</button>}{session.status === 'active' && <button className="button button-danger" onClick={endSession}>Finalizar sesión</button>}</div></div><BigTimer session={session} now={now} onProject={() => setProjecting(true)} />
       {projecting && <ProjectorOverlay session={session} now={now} onClose={() => setProjecting(false)} />}
       <div className="dashboard-grid"><section className="qr-panel"><div className="panel-label">ACCESO DE ESTUDIANTES</div><div className="qr-frame"><img src={session.qrCode} alt="Código QR de acceso" /></div><strong>{session.status === 'waiting' ? 'Escanea y espera el inicio' : 'Sesión iniciada'}</strong>{session.status === 'active' && <button className="late-toggle" type="button" onClick={toggleLate}>{session.allowLate ? 'Ingreso tardío HABILITADO · tocar para cerrar' : 'Ingreso nuevo cerrado · tocar para habilitar tardíos'}</button>}<p>También puedes compartir este enlace:</p><button className="copy-link" onClick={() => navigator.clipboard?.writeText(session.qrData)}>{session.qrData.replace('http://', '').replace('https://', '')} <span>Copiar</span></button></section><section className="roster-panel">
       <div className="panel-header"><div><div className="panel-label">PRESENCIA</div><h2>{liveStudents.length.toString().padStart(2, '0')} en vivo</h2></div><span className="live-dot">{session.status === 'waiting' ? 'ESPERANDO' : 'EN VIVO'}</span></div>

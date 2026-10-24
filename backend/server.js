@@ -104,7 +104,13 @@ function openIncident(session, student, { type, backgroundMs, hint }, sessionSta
   const incident = { incidentId: randomUUID(), studentId: student.studentId, studentName: student.name, type, status: INCIDENT_PENDING, firstEventAt: nowIso, lastEventAt: nowIso, eventCount: 1, backgroundMs, hint: hint ?? null, sessionStatusAtReceive: sessionStatus, reviewedBy: null, reviewedAt: null, reviewNote: null };
   session.incidents.unshift(incident);
   logEvent(session.sessionId, 'incident_opened', { student, data: { incidentId: incident.incidentId, type, backgroundMs } });
+  if (sessionStatus === 'active') notifyProfessor(session, { studentName: student.name, type: 'incident' });
   return incident;
+}
+
+// Aviso sonoro al profesor por cualquier actividad del alumno con el examen en curso.
+function notifyProfessor(session, payload) {
+  io.to(profRoom(session)).emit('activity:notify', { ...payload, timestamp: new Date().toISOString() });
 }
 
 function groupIntoLastIncident(session, student) {
@@ -139,6 +145,7 @@ function recordAlert(session, student, type, message, options) {
   const alert = { alertId: randomUUID(), studentId: student.studentId, studentName: student.name, type, severity: options?.severity ?? ALERT_SEVERITY[type] ?? 'info', timestamp: new Date().toISOString(), message, strike: counted ? student.strikes : null, maxStrikes: session.maxStrikes };
   session.alerts.unshift(alert);
   io.to(profRoom(session)).emit('alert:triggered', alert);
+  if (session.status === 'active') notifyProfessor(session, { studentName: student.name, type });
   // Desconexión, reconexión y segundo dispositivo ya quedan como eventos de presencia.
   if (!PRESENCE_ALERTS.has(type)) logEvent(session.sessionId, 'alert', { student, data: { alertType: type, message, strike: alert.strike } });
   if (counted && student.strikes >= session.maxStrikes) {
