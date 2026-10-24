@@ -257,6 +257,7 @@ function ProfessorDashboard() {
   const [soundOn, setSoundOn] = useState(false);
   const audioCtx = useRef(null);
 
+  useEffect(() => { const arm = () => ensureSound(); window.addEventListener('pointerdown', arm, { once: true }); return () => window.removeEventListener('pointerdown', arm); }, []);
   useEffect(() => { const timer = setInterval(() => setNow(new Date(Date.now() + clockOffset.current)), 1000); return () => clearInterval(timer); }, []);
   useEffect(() => {
     if (!session) return;
@@ -269,6 +270,14 @@ function ProfessorDashboard() {
     return () => { socket.off('session:updated', update); socket.off('activity:notify', playAlertSound); socket.disconnect(); };
   }, [session?.sessionId]);
 
+  function ensureSound() {
+    if (audioCtx.current) { audioCtx.current.resume?.(); return; }
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    audioCtx.current = new Ctx();
+    audioCtx.current.resume();
+    setSoundOn(true);
+  }
   function toggleSound() {
     if (audioCtx.current) { audioCtx.current.close?.(); audioCtx.current = null; setSoundOn(false); return; }
     const Ctx = window.AudioContext || window.webkitAudioContext;
@@ -314,6 +323,7 @@ function ProfessorDashboard() {
     setSession((current) => ({ ...current, status: 'ended' }));
   }
   function startSession(force = false) {
+    ensureSound();
     if (force && !window.confirm(`Faltan ${notReadyStudents.length} alumno(s) por confirmar (${notReadyStudents.map((student) => student.name).join(', ')}). ¿Iniciar el examen de todos modos? Quedará registrado.`)) return;
     socket.emit('professor:start', { sessionId: session.sessionId, token: auth?.token, force });
   }
