@@ -75,7 +75,7 @@ function studentView(session) {
 
 // Gravedad de cada tipo de alerta; lo que el cliente envíe fuera de esta lista se registra como "other".
 const ALERT_SEVERITY = {
-  tab_switch: 'warning', window_blur: 'warning', screen_lock: 'warning', context_menu: 'warning', shortcut: 'warning',
+  tab_switch: 'warning', window_blur: 'warning', screen_lock: 'warning', context_menu: 'warning', shortcut: 'warning', minor_shortcut: 'info',
   copy: 'critical', cut: 'critical', paste: 'critical', print: 'critical', screenshot_key: 'critical',
   disconnected: 'critical', second_device: 'critical',
   returned: 'info', reconnected: 'info', orientation_change: 'info', idle: 'info', other: 'info',
@@ -84,12 +84,21 @@ const ALERT_SEVERITY = {
 
 // Acciones que restan un aviso al alumno. Salir de la pantalla cuenta una sola vez por salida
 // (hasta que vuelve) y "reconnected" cuenta como el aviso por desbloquear el teléfono tras una ausencia.
-const LEAVE_TYPES = new Set(['tab_switch', 'screen_lock', 'window_blur']);
+const LEAVE_TYPES = new Set(['tab_switch', 'window_blur']);
 const STRIKE_TYPES = new Set(['reconnected', 'second_device', 'copy', 'cut', 'paste', 'print', 'screenshot_key', 'shortcut']);
 
-function applyStrike(session, student, type) {
+// Una caída de red breve al volver no es una falta: solo cuenta si estuvo ausente más de este tiempo.
+const MIN_AWAY_FOR_STRIKE_SECONDS = 20;
+
+function applyStrike(session, student, type, { noStrike = false } = {}) {
   if (!session.maxStrikes || session.status !== 'active' || student.status !== 'active') return false;
-  if (type === 'returned') { student.inEpisode = false; return false; }
+  if (type === 'returned') { student.inEpisode = false; student.locked = false; return false; }
+  // Bloquear el teléfono no es una falta, ni tampoco la reconexión que ocurre al desbloquearlo.
+  if (type === 'screen_lock') { student.locked = true; return false; }
+  if (type === 'reconnected' && student.locked) return false;
+  if (noStrike) return false;
+  // Si la salida ya se contó (pestaña oculta o pérdida de foco), volver a conectar no suma otro aviso.
+  if (type === 'reconnected' && student.inEpisode) return false;
   if (LEAVE_TYPES.has(type)) {
     if (student.inEpisode) return false;
     student.inEpisode = true;
@@ -111,8 +120,8 @@ function expelStudent(session, student, { reason, actor = null }) {
 
 const PRESENCE_ALERTS = new Set(['disconnected', 'reconnected', 'second_device']);
 
-function recordAlert(session, student, type, message) {
-  const counted = applyStrike(session, student, type);
+function recordAlert(session, student, type, message, options) {
+  const counted = applyStrike(session, student, type, options);
   const alert = { alertId: randomUUID(), studentId: student.studentId, studentName: student.name, type, severity: ALERT_SEVERITY[type] ?? 'info', timestamp: new Date().toISOString(), message, strike: counted ? student.strikes : null, maxStrikes: session.maxStrikes };
   session.alerts.unshift(alert);
   io.to(profRoom(session)).emit('alert:triggered', alert);
@@ -379,7 +388,7 @@ io.on('connection', (socket) => {
         student.awaySeconds = (student.awaySeconds ?? 0) + away;
         student.status = 'active';
         student.leftAt = null;
-        if (session.status === 'active') recordAlert(session, student, 'reconnected', `Volvió a la sesión tras ${formatAway(away)} desconectado`);
+        if (session.status === 'active') recordAlert(session, student, 'reconnected', `Volvió a la sesión tras ${formatAway(away)} desconectado`, { noStrike: away < MIN_AWAY_FOR_STRIKE_SECONDS });
         logEvent(sessionId, 'student_reconnected', { student, data: { awaySeconds: away, sessionStatus: session.status } });
       }
       student.socketId = socket.id;
@@ -424,7 +433,7 @@ io.on('connection', (socket) => {
     const alert = recordAlert(session, student, alertType, String(message ?? '').slice(0, 200) || 'Actividad registrada');
     if (alert.strike && student.status === 'active') socket.emit('strikes:update', { count: student.strikes, max: session.maxStrikes, type: alertType });
     // Seguimiento en vivo: el alumno sigue conectado pero no está mirando la pantalla del examen.
-    if (alertType === 'tab_switch' || alertType === 'screen_lock') {
+    if (alertType === 'tab_switch' || alertType === 'screen_lock' || alertType === 'window_blur') {
       student.visible = false;
       student.hiddenAt = new Date().toISOString();
     } else if (alertType === 'returned') {

@@ -218,7 +218,7 @@ function RoleArea({ role, view }) {
 const FEATURES = [
   ['01', 'Sesiones con QR', 'Crea un examen, comparte el código QR y tus alumnos entran desde su celular en segundos.'],
   ['02', 'Supervisión en vivo', 'Ve quién está conectado y recibe alertas cuando alguien cambia de pestaña, bloquea la pantalla o se desconecta.'],
-  ['03', 'Dudas sin interrumpir', 'Los alumnos levantan la mano desde su pantalla y tú los atiendes desde tu panel.'],
+  ['03', 'Avisos y expulsión', 'Cada salida de pantalla suma un aviso y, al llegar al límite, el alumno es expulsado; tú puedes readmitirlo.'],
   ['04', 'Registros y revisión', 'Cada examen queda guardado: revisa alumno por alumno, agrega notas y exporta los resultados.'],
   ['05', 'Perfiles y accesos', 'Cada persona tiene su perfil. Un administrador aprueba quién entra como profesor o como estudiante.']
 ];
@@ -433,19 +433,19 @@ function StudentEntry() {
 
 function StudentScanner() { const navigate = useNavigate(); useEffect(() => { const scanner = new Html5QrcodeScanner('reader', { fps: 10, qrbox: { width: 220, height: 220 } }, false); scanner.render((decoded) => { scanner.clear(); try { navigate(new URL(decoded).pathname); } catch { navigate(decoded); } }, () => {}); return () => scanner.clear().catch(() => {}); }, [navigate]); return <Layout><AreaNav role="estudiante" /><section className="scanner-page"><div className="page-kicker">ENTRADA DE ESTUDIANTE <span>01</span></div><h1>Escanea el<br /><em>código de acceso.</em></h1><p className="lede">Apunta la cámara al QR que muestra tu profesor.</p><div id="reader" className="scanner-box" /></section></Layout>; }
 
+let suppressBlurUntil = 0;
+
 function StudentLive() { const { sessionId } = useParams(); const navigate = useNavigate(); const location = useLocation(); const guest = readGuest(sessionId); const [session, setSession] = useState(null); const [alertCount, setAlertCount] = useState(0); const [now, setNow] = useState(Date.now());
   const offsetRef = useRef(0);
   const [strikes, setStrikes] = useState({ count: 0, max: 0 });
-  const [strikeBanner, setStrikeBanner] = useState(''); const [soundEnabled, setSoundEnabled] = useState(false); const [helpStatus, setHelpStatus] = useState('idle'); const audioContext = useRef(null); const [notice, setNotice] = useState(null); const name = guest?.student?.name || 'Estudiante';
+  const [strikeBanner, setStrikeBanner] = useState(''); const [soundEnabled, setSoundEnabled] = useState(false); const audioContext = useRef(null); const [notice, setNotice] = useState(null); const name = guest?.student?.name || 'Estudiante';
   useEffect(() => { if (!guest) navigate(`/student/${sessionId}`, { replace: true }); }, [sessionId]);
-  useEffect(() => { if (!guest) return; fetch(`${API_URL}/api/sessions/${sessionId}`).then((r) => r.json()).then((data) => { if (data.serverTime) offsetRef.current = Date.parse(data.serverTime) - Date.now(); setStrikes((current) => ({ ...current, max: data.maxStrikes ?? current.max })); setSession(data); }); const onConnected = (data) => { if (data.session?.serverTime) offsetRef.current = Date.parse(data.session.serverTime) - Date.now(); if (data.strikes) setStrikes(data.strikes); setSession((current) => ({ ...current, ...(data.session ?? {}), students: data.students })); }; const onUpdate = (data) => { if (data.serverTime) offsetRef.current = Date.parse(data.serverTime) - Date.now(); setSession(data); }; const onExpelled = (info) => { setNotice({ title: 'Fuiste expulsado de la sesión', text: info?.reason === 'max_alerts' ? `Llegaste al límite de ${info.maxStrikes} avisos por salir de la pantalla del examen u otras acciones no permitidas. Si crees que fue un error, habla con tu profesor.` : 'El profesor te expulsó de esta sesión.', retry: false }); socket.disconnect(); }; const onEnded = () => setSession((current) => ({ ...current, status: 'ended' })); const onAlert = (alert) => { setAlertCount((value) => value + 1); playAlertSound(); showAlertNotification(alert); }; const onHelpResolved = () => setHelpStatus('idle'); socket.on('session:connected', onConnected); socket.on('session:updated', onUpdate); socket.on('student:expelled', onExpelled); socket.on('session:ended', onEnded); socket.on('alert:recorded', onAlert); const onStrikes = ({ count, max }) => { setStrikes({ count, max }); setStrikeBanner(`Aviso ${count} de ${max}. Te quedan ${Math.max(0, max - count)}. Permanece en la pantalla del examen.`); };
+  useEffect(() => { if (!guest) return; fetch(`${API_URL}/api/sessions/${sessionId}`).then((r) => r.json()).then((data) => { if (data.serverTime) offsetRef.current = Date.parse(data.serverTime) - Date.now(); setStrikes((current) => ({ ...current, max: data.maxStrikes ?? current.max })); setSession(data); }); const onConnected = (data) => { if (data.session?.serverTime) offsetRef.current = Date.parse(data.session.serverTime) - Date.now(); if (data.strikes) setStrikes(data.strikes); setSession((current) => ({ ...current, ...(data.session ?? {}), students: data.students })); }; const onUpdate = (data) => { if (data.serverTime) offsetRef.current = Date.parse(data.serverTime) - Date.now(); setSession(data); }; const onExpelled = (info) => { setNotice({ title: 'Fuiste expulsado de la sesión', text: info?.reason === 'max_alerts' ? `Llegaste al límite de ${info.maxStrikes} avisos por salir de la pantalla del examen u otras acciones no permitidas. Si crees que fue un error, habla con tu profesor.` : 'El profesor te expulsó de esta sesión.', retry: false }); socket.disconnect(); }; const onEnded = () => setSession((current) => ({ ...current, status: 'ended' })); const onAlert = (alert) => { setAlertCount((value) => value + 1); playAlertSound(); showAlertNotification(alert); }; socket.on('session:connected', onConnected); socket.on('session:updated', onUpdate); socket.on('student:expelled', onExpelled); socket.on('session:ended', onEnded); socket.on('alert:recorded', onAlert); const onStrikes = ({ count, max }) => { setStrikes({ count, max }); setStrikeBanner(`Aviso ${count} de ${max}. Te quedan ${Math.max(0, max - count)}. Permanece en la pantalla del examen.`); };
     socket.on('strikes:update', onStrikes);
-    socket.on('help:resolved', onHelpResolved); const join = () => socket.emit('student:join', { sessionId, guestToken: guest.token }); const onReplaced = () => { setNotice({ title: 'Sesión abierta en otro dispositivo', text: 'Esta sesión se abrió desde otro dispositivo o pestaña, por lo que esta quedó cerrada. El profesor fue avisado.' }); socket.disconnect(); }; const onSessionError = ({ message }) => setNotice({ title: 'No se pudo entrar a la sesión', text: message, retry: !/expulsado/.test(message) }); socket.on('connect', join); socket.on('student:replaced', onReplaced); socket.on('session:error', onSessionError); socket.connect(); if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); return () => { socket.off('session:connected', onConnected); socket.off('session:updated', onUpdate); socket.off('student:expelled', onExpelled); socket.off('session:ended', onEnded); socket.off('alert:recorded', onAlert); socket.off('strikes:update', onStrikes); socket.off('help:resolved', onHelpResolved); socket.off('connect', join); socket.off('student:replaced', onReplaced); socket.off('session:error', onSessionError); socket.disconnect(); }; }, [sessionId]);
+    const join = () => socket.emit('student:join', { sessionId, guestToken: guest.token }); const onReplaced = () => { setNotice({ title: 'Sesión abierta en otro dispositivo', text: 'Esta sesión se abrió desde otro dispositivo o pestaña, por lo que esta quedó cerrada. El profesor fue avisado.' }); socket.disconnect(); }; const onSessionError = ({ message }) => setNotice({ title: 'No se pudo entrar a la sesión', text: message, retry: !/expulsado/.test(message) }); socket.on('connect', join); socket.on('student:replaced', onReplaced); socket.on('session:error', onSessionError); socket.connect(); if ('Notification' in window && Notification.permission === 'default') { suppressBlurUntil = Date.now() + 60_000; Promise.resolve(Notification.requestPermission()).finally(() => { suppressBlurUntil = Date.now() + 2000; }); } return () => { socket.off('session:connected', onConnected); socket.off('session:updated', onUpdate); socket.off('student:expelled', onExpelled); socket.off('session:ended', onEnded); socket.off('alert:recorded', onAlert); socket.off('strikes:update', onStrikes); socket.off('connect', join); socket.off('student:replaced', onReplaced); socket.off('session:error', onSessionError); socket.disconnect(); }; }, [sessionId]);
   function enableSound() { if (audioContext.current) { audioContext.current.close?.(); audioContext.current = null; setSoundEnabled(false); return; } const AudioContextClass = window.AudioContext || window.webkitAudioContext; if (!AudioContextClass) return; audioContext.current = new AudioContextClass(); audioContext.current.resume(); setSoundEnabled(true); }
   function playAlertSound() { if (!audioContext.current) return; const oscillator = audioContext.current.createOscillator(); const gain = audioContext.current.createGain(); oscillator.frequency.value = 880; gain.gain.setValueAtTime(0.18, audioContext.current.currentTime); gain.gain.exponentialRampToValueAtTime(0.001, audioContext.current.currentTime + 0.35); oscillator.connect(gain); gain.connect(audioContext.current.destination); oscillator.start(); oscillator.stop(audioContext.current.currentTime + 0.35); }
   function showAlertNotification(alert) { if ('Notification' in window && Notification.permission === 'granted') new Notification('Actividad registrada', { body: alert.message }); }
-  function requestHelp() { socket.emit('student:help_request', { sessionId }); setHelpStatus('pending'); }
-  function cancelHelp() { socket.emit('student:help_cancel', { sessionId }); setHelpStatus('idle'); }
   useEffect(() => { const timer = setInterval(() => setNow(Date.now() + offsetRef.current), 1000); return () => clearInterval(timer); }, []);
   useEffect(() => { if (!strikeBanner) return undefined; const hide = setTimeout(() => setStrikeBanner(''), 9000); return () => clearTimeout(hide); }, [strikeBanner]);
   useEffect(() => {
@@ -468,9 +468,13 @@ function StudentLive() { const { sessionId } = useParams(); const navigate = use
 
     const visibility = () => {
       if (document.hidden) {
+        cancelBlur();
+        blurReported = false;
         const idleMs = Date.now() - lastInteraction;
         hiddenAt = Date.now();
-        if (idleMs >= 5000) report('screen_lock', 'Ocultó la pantalla tras un rato sin tocarla (posible bloqueo o cierre)');
+        // Solo un dispositivo táctil puede bloquearse sin que sea una salida; en computador no se perdona.
+        const touchDevice = window.matchMedia?.('(pointer: coarse)').matches;
+        if (touchDevice && idleMs >= 5000) report('screen_lock', 'Ocultó la pantalla tras un rato sin tocarla (posible bloqueo o cierre)');
         else report('tab_switch', 'Cambió de pestaña o aplicación');
       } else if (hiddenAt) {
         const seconds = Math.round((Date.now() - hiddenAt) / 1000);
@@ -478,17 +482,41 @@ function StudentLive() { const { sessionId } = useParams(); const navigate = use
         report('returned', `Volvió a la pantalla del examen tras ${seconds} s`);
       }
     };
-    const blur = () => { if (!document.hidden) report('window_blur', 'Perdió foco de ventana'); };
+    // Perder el foco solo cuenta si se mantiene un momento: diálogos del sistema, avisos de permisos o un clic
+    // rápido fuera de la ventana no son una salida. Al recuperar el foco se cierra el episodio.
+    let blurTimer = null;
+    let blurReported = false;
+    const cancelBlur = () => { clearTimeout(blurTimer); blurTimer = null; };
+    const blur = () => {
+      if (document.hidden || blurTimer || blurReported) return;
+      blurTimer = setTimeout(() => {
+        blurTimer = null;
+        if (document.hidden || document.hasFocus() || Date.now() < suppressBlurUntil) return;
+        blurReported = true;
+        report('window_blur', 'Perdió foco de ventana', 0);
+      }, 1500);
+    };
+    const focus = () => {
+      cancelBlur();
+      if (!blurReported) return;
+      blurReported = false;
+      report('returned', 'Volvió a la ventana del examen', 0);
+    };
     const keydown = (event) => {
       const key = event.key?.toLowerCase();
       const command = event.ctrlKey || event.metaKey;
       if (key === 'printscreen') report('screenshot_key', 'Presionó la tecla Imprimir pantalla');
       else if (key === 'f12' || (command && event.shiftKey && ['i', 'j', 'c'].includes(key))) report('shortcut', 'Intentó abrir las herramientas de desarrollador');
-      else if (command && ['u', 's', 'f', 'a'].includes(key)) report('shortcut', `Usó el atajo ${event.metaKey ? 'Cmd' : 'Ctrl'}+${key.toUpperCase()}`);
+      else if (command && ['u', 's'].includes(key)) report('shortcut', `Usó el atajo ${event.metaKey ? 'Cmd' : 'Ctrl'}+${key.toUpperCase()}`);
+      else if (command && ['f', 'a'].includes(key)) report('minor_shortcut', `Usó el atajo ${event.metaKey ? 'Cmd' : 'Ctrl'}+${key.toUpperCase()} (no cuenta como aviso)`);
     };
+    const isEditable = (target) => target instanceof Element && target.closest('input, textarea, [contenteditable="true"]');
+    const hasSelection = () => (window.getSelection?.().toString() ?? '').length > 0;
     const listeners = [
-      [window, 'blur', blur], [document, 'visibilitychange', visibility], [document, 'keydown', keydown],
-      [document, 'copy', () => report('copy', 'Copió contenido de la página')], [document, 'cut', () => report('cut', 'Cortó contenido de la página')], [document, 'paste', () => report('paste', 'Pegó contenido en la página')],
+      [window, 'blur', blur], [window, 'focus', focus], [document, 'visibilitychange', visibility], [document, 'keydown', keydown],
+      [document, 'copy', (event) => { if (hasSelection() && !isEditable(event.target)) report('copy', 'Copió contenido de la página'); }],
+      [document, 'cut', (event) => { if (hasSelection() && !isEditable(event.target)) report('cut', 'Cortó contenido de la página'); }],
+      [document, 'paste', (event) => { if (!isEditable(event.target)) report('paste', 'Pegó contenido en la página'); }],
       [document, 'contextmenu', () => report('context_menu', 'Abrió el menú contextual (clic derecho o pulsación larga)')],
       [window, 'beforeprint', () => report('print', 'Intentó imprimir la página')],
       [window, 'orientationchange', () => report('orientation_change', 'Giró la pantalla del dispositivo', 2000)]
@@ -508,7 +536,7 @@ function StudentLive() { const { sessionId } = useParams(); const navigate = use
   const waiting = session?.status === 'waiting';
   if (notice) return <div className="live-shell"><header className="live-header"><Brand /><span className="secure-label">Sesión cerrada</span></header><section className="live-content ended-screen"><div className="live-kicker">{session?.examName || 'Sesión de evaluación'}</div><h1>{notice.title}</h1><p className="live-intro">{notice.text}</p>{notice.retry && <Link className="button button-dark" to={`/student/${sessionId}`} onClick={() => localStorage.removeItem(guestStorageKey(sessionId))}>Volver a registrarme <span>→</span></Link>}</section></div>;
   if (session?.status === 'ended') return <div className="live-shell"><header className="live-header"><Brand /><span className="secure-label">Sesión cerrada</span></header><section className="live-content ended-screen"><div className="live-kicker">{session.examName}</div><h1>Examen<br /><em>finalizado.</em></h1><p className="live-intro">El profesor ha cerrado esta sesión. Tus respuestas y tu registro han quedado guardados.</p></section></div>;
-  return <div className="live-shell"><header className="live-header"><Brand /><span className="secure-label"><i /> Sesión protegida</span></header><section className="live-content"><div className="live-kicker">{session?.examName || 'Sesión de evaluación'} <span>· {waiting ? 'ESPERANDO INICIO' : 'EN CURSO'}</span></div><h1>Hola, {name.split(' ')[0]}.</h1><p className="live-intro">{waiting ? 'El profesor aún no ha iniciado la evaluación. Permanece en esta pantalla.' : 'Esta pantalla permanece activa mientras realizas tu evaluación.'}</p><div className="timer-card"><span>{waiting ? 'TIEMPO PENDIENTE' : 'TIEMPO RESTANTE'}</span><strong>{formatted}</strong><div className="timer-track"><i style={{ width: session?.status === 'active' ? `${Math.max(0, Math.min(100, (remainingSeconds / (session.duration * 60)) * 100))}%` : '0%' }} /></div></div><div className="live-stats"><div><strong>{session?.students?.filter((s) => s.status === 'active').length || 1}</strong><span>compañeros<br />presentes</span></div>{strikes.max > 0 ? <div className={strikes.max - strikes.count <= 1 ? 'stat-danger' : ''}><strong>{Math.max(0, strikes.max - strikes.count)}</strong><span>avisos<br />restantes</span></div> : <div><strong>{alertCount}</strong><span>eventos<br />registrados</span></div>}</div>{strikeBanner && <div className="strike-banner" role="alert">{strikeBanner}</div>}<div className="live-notice"><span>◉</span><p><strong>{waiting ? 'Conectado correctamente.' : 'Tu sesión está siendo supervisada.'}</strong><br />{waiting ? 'Recibirás el inicio en esta misma pantalla.' : 'Permanece en esta pestaña hasta entregar tu evaluación.'}{strikes.max > 0 ? ` Cada salida de la pantalla, desbloquear el teléfono o copiar y pegar cuenta como aviso: con ${strikes.max} avisos serás expulsado.` : ''}</p></div><button className="sound-toggle" onClick={enableSound}>{soundEnabled ? 'Sonido activado · tocar para silenciar' : 'Activar sonido de alertas'}</button></section><button className={`help-button${helpStatus === 'pending' ? ' help-button-pending' : ''}`} type="button" onClick={helpStatus === 'pending' ? cancelHelp : requestHelp}>{helpStatus === 'pending' ? 'Esperando al profesor… (cancelar)' : '✋ Tengo una duda'}</button></div>;
+  return <div className="live-shell"><header className="live-header"><Brand /><span className="secure-label"><i /> Sesión protegida</span></header><section className="live-content"><div className="live-kicker">{session?.examName || 'Sesión de evaluación'} <span>· {waiting ? 'ESPERANDO INICIO' : 'EN CURSO'}</span></div><h1>Hola, {name.split(' ')[0]}.</h1><p className="live-intro">{waiting ? 'El profesor aún no ha iniciado la evaluación. Permanece en esta pantalla.' : 'Esta pantalla permanece activa mientras realizas tu evaluación.'}</p><div className="timer-card"><span>{waiting ? 'TIEMPO PENDIENTE' : 'TIEMPO RESTANTE'}</span><strong>{formatted}</strong><div className="timer-track"><i style={{ width: session?.status === 'active' ? `${Math.max(0, Math.min(100, (remainingSeconds / (session.duration * 60)) * 100))}%` : '0%' }} /></div></div><div className="live-stats"><div><strong>{session?.students?.filter((s) => s.status === 'active').length || 1}</strong><span>compañeros<br />presentes</span></div>{strikes.max > 0 ? <div className={strikes.max - strikes.count <= 1 ? 'stat-danger' : ''}><strong>{Math.max(0, strikes.max - strikes.count)}</strong><span>avisos<br />restantes</span></div> : <div><strong>{alertCount}</strong><span>eventos<br />registrados</span></div>}</div>{strikeBanner && <div className="strike-banner" role="alert">{strikeBanner}</div>}<div className="live-notice"><span>◉</span><p><strong>{waiting ? 'Conectado correctamente.' : 'Tu sesión está siendo supervisada.'}</strong><br />{waiting ? 'Recibirás el inicio en esta misma pantalla.' : 'Permanece en esta pestaña hasta entregar tu evaluación.'}{strikes.max > 0 ? ` Cada salida de la pantalla o copiar y pegar cuenta como aviso (bloquear el teléfono no): con ${strikes.max} avisos serás expulsado.` : ''}</p></div><button className="sound-toggle" onClick={enableSound}>{soundEnabled ? 'Sonido activado · tocar para silenciar' : 'Activar sonido de alertas'}</button></section></div>;
 }
 
 const STATUS_LABELS = { pending: 'Pendiente', approved: 'Aprobado', rejected: 'Rechazada', disabled: 'Desactivado' };
