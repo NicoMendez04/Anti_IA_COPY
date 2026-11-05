@@ -187,6 +187,8 @@ function recordAlert(session, student, type, message, options) {
   const counted = applyStrike(session, student, type, options);
   const sound = soundsFor(session, student, type);
   const alert = { alertId: randomUUID(), studentId: student.studentId, studentName: student.name, type, severity: options?.severity ?? ALERT_SEVERITY[type] ?? 'info', timestamp: new Date().toISOString(), message, strike: counted ? student.strikes : null,   maxStrikes: session.maxStrikes, sound };
+  // Antes del inicio no se muestran alertas ni suenan avisos: solo importa que el alumno confirme.
+  if (session.status === 'waiting') return { ...alert, sound: false };
   session.alerts.unshift(alert);
   io.to(profRoom(session)).emit('alert:triggered', alert);
     if (alert.sound) notifyProfessor(session, { studentName: student.name, type });

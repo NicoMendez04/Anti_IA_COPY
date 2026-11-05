@@ -63,7 +63,7 @@ function addTable(workbook, name, columns, rows) {
 /** Arma el informe de un examen. `profiles` es un mapa uid -> ficha del usuario (carrera, matrícula). */
 export async function buildExamReport({ exam, events, profiles }) {
   const workbook = new ExcelJS.Workbook();
-  workbook.creator = 'Vigía';
+  workbook.creator = 'IAn\'t';
   workbook.created = new Date();
 
   const students = exam.students ?? [];

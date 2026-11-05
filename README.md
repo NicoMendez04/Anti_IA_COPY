@@ -1,4 +1,4 @@
-# Vigía
+# IAn't
 
 MVP de sesiones de evaluación digital con supervisión en tiempo real.
 
