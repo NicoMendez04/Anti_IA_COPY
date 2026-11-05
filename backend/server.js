@@ -258,8 +258,8 @@ app.post('/api/sessions', requireAuth('profesor', 'admin'), async (req, res) => 
   const resolved = await resolveCourse({ courseId, customCourseName, professorSpecialtyIds: profile.specialtyIds ?? [], isAdmin: req.auth.role === 'admin' });
   if (resolved.error) return res.status(400).json({ message: resolved.error });
   const { course, specialties } = resolved;
-  // Sin expulsión automática: los avisos por actividad no suman faltas; solo el profesor expulsa (0 = sin límite).
-  const maxStrikes = 0;
+  const strikesInput = Number(req.body.maxStrikes ?? 5);
+  const maxStrikes = Number.isInteger(strikesInput) && strikesInput >= 0 && strikesInput <= 20 ? strikesInput : 5;
 
   const sessionId = makeSessionId(examName, course?.name ?? course?.code);
   const qrData = `${process.env.PUBLIC_APP_URL ?? 'http://localhost:5173'}/student/${sessionId}`;
