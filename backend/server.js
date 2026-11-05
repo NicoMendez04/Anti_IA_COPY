@@ -175,6 +175,8 @@ const WAKE_ALERTS = new Set(['returned', 'reconnected']);
 // Antes del inicio, el primer bloqueo del alumno es el esperado y no suena; suena desde que vuelve a encender el equipo.
 function soundsFor(session, student, type) {
   if (session.status === 'ended') return false;
+  // Una llamada o un bloqueo ocultan la página igual que cambiar de app: solo suena cuando el alumno vuelve a la pantalla.
+  if (session.status === 'active' && LOCK_ALERTS.has(type)) return false;
   if (session.status !== 'waiting') return true;
   const phase = student.initialLock ?? 'none';
   if (phase === 'done') return true;
@@ -231,6 +233,16 @@ async function saveSessionLog(session) {
 
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
 
+// ID legible para Firestore y los enlaces: fecha (hora de Chile) + ramo + examen + sufijo corto que evita repetidos.
+const slugify = (text, max) => String(text ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, max).replace(/-+$/, '');
+function makeSessionId(examName, courseName) {
+  const date = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Santiago' }).format(new Date());
+  const parts = [date, slugify(courseName, 20), slugify(examName, 24)].filter(Boolean);
+  let id;
+  do id = `${parts.join('_')}_${randomUUID().slice(0, 4)}`; while (sessions.has(id));
+  return id;
+}
+
 registerAccountRoutes(app);
 registerRecordRoutes(app, sessions);
 registerCatalogRoutes(app);
@@ -248,7 +260,7 @@ app.post('/api/sessions', requireAuth('profesor', 'admin'), async (req, res) => 
   const strikesInput = Number(req.body.maxStrikes ?? 5);
   const maxStrikes = Number.isInteger(strikesInput) && strikesInput >= 0 && strikesInput <= 20 ? strikesInput : 5;
 
-  const sessionId = `sess_${randomUUID().slice(0, 8)}`;
+  const sessionId = makeSessionId(examName, course?.name ?? course?.code);
   const qrData = `${process.env.PUBLIC_APP_URL ?? 'http://localhost:5173'}/student/${sessionId}`;
   const qrCode = await QRCode.toDataURL(qrData, { margin: 2, width: 320 });
   const session = {
