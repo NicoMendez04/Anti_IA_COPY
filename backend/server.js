@@ -167,7 +167,7 @@ function finishStudent(session, student, { actor = null } = {}) {
   persistSession(session);
 }
 
-const PRESENCE_ALERTS = new Set(['disconnected', 'reconnected', 'second_device']);
+const PRESENCE_ALERTS = new Set(['joined', 'disconnected', 'reconnected', 'second_device']);
 
 const LOCK_ALERTS = new Set(['tab_switch', 'window_blur', 'screen_lock', 'page_closed', 'disconnected']);
 const WAKE_ALERTS = new Set(['returned', 'reconnected']);
@@ -189,8 +189,9 @@ function recordAlert(session, student, type, message, options) {
   const counted = applyStrike(session, student, type, options);
   const sound = soundsFor(session, student, type);
   const alert = { alertId: randomUUID(), studentId: student.studentId, studentName: student.name, type, severity: options?.severity ?? ALERT_SEVERITY[type] ?? 'info', timestamp: new Date().toISOString(), message, strike: counted ? student.strikes : null,   maxStrikes: session.maxStrikes, sound };
-  // Antes del inicio no se muestran alertas ni suenan avisos: solo importa que el alumno confirme.
-  if (session.status === 'waiting') return { ...alert, sound: false };
+  // Antes del inicio solo queda registrado el ingreso del alumno; no hay otras alertas ni avisos sonoros.
+  if (session.status === 'waiting' && type !== 'joined') return { ...alert, sound: false };
+  if (type === 'joined') alert.sound = false;
   session.alerts.unshift(alert);
   io.to(profRoom(session)).emit('alert:triggered', alert);
     if (alert.sound) notifyProfessor(session, { studentName: student.name, type });
@@ -543,6 +544,7 @@ io.on('connection', (socket) => {
       student = { studentId, identityKey, guest: true, uid: guest.uid ?? null, rut: guest.rut, socketId: socket.id, name: guest.name, email: guest.email, joinedAt: new Date().toISOString(), leftAt: null, status: 'active', visible: true, hiddenAt: null, disconnectCount: 0, reconnectCount: 0, awaySeconds: 0, strikes: 0, expelledReason: null };
       session.students.set(studentId, student);
       logEvent(sessionId, 'student_joined', { student, data: { sessionStatus: session.status, rut: student.rut } });
+      if (session.status === 'waiting') recordAlert(session, student, 'joined', 'Ingresó a la sesión', { severity: 'info' });
     }
 
     socket.data = { sessionId, studentId: student.studentId };

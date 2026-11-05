@@ -80,4 +80,4 @@
 .phone-locked strong{font-size:28px}.phone-locked p{margin:0;color:#c9c6bc;font-size:17px}
 .phone-simple .strike-banner{margin:0;border-radius:0}
 .row-action-ok{border-color:#2f7d4f;color:#2f7d4f}
-.student-row-done{opacity:.75}
+.student-row-done{opacity:.75}.roster-finished{border-left:3px solid #2f7d4f;padding-left:10px}.group-done{color:#2f7d4f}.student-row-done .avatar{background:#2f7d4f;color:#fff}
