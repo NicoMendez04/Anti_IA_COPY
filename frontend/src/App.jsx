@@ -38,6 +38,10 @@ function homeFor(auth) {
   return auth.onboarded ? `/${area}` : `/${area}/profile`;
 }
 
+async function freshToken(auth) {
+  try { return (await firebaseAuth.currentUser?.getIdToken()) ?? auth?.token; } catch { return auth?.token; }
+}
+
 function useAuth(role) {
   const [session, setSession] = useState(readCachedAuth);
   const clear = () => { setSession(null); localStorage.removeItem(AUTH_KEY); };
@@ -328,21 +332,21 @@ function ProfessorDashboard() {
     socket.emit('professor:start', { sessionId: session.sessionId, token: auth?.token, force });
   }
   async function readmit(studentId) {
-    await fetch(`${API_URL}/api/sessions/${session.sessionId}/readmit/${studentId}`, { method: 'POST', headers: { Authorization: `Bearer ${auth.token}` } });
+    await fetch(`${API_URL}/api/sessions/${session.sessionId}/readmit/${studentId}`, { method: 'POST', headers: { Authorization: `Bearer ${await freshToken(auth)}` } });
   }
   async function reviewIncident(incidentId, decision) {
-    await fetch(`${API_URL}/api/sessions/${session.sessionId}/incidents/${incidentId}/review`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${auth.token}` }, body: JSON.stringify({ decision }) });
+    await fetch(`${API_URL}/api/sessions/${session.sessionId}/incidents/${incidentId}/review`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${await freshToken(auth)}` }, body: JSON.stringify({ decision }) });
   }
   function toggleLate() {
     socket.emit('professor:allow_late', { sessionId: session.sessionId, token: auth?.token, allow: !session.allowLate });
   }
   async function expel(studentId) {
-    await fetch(`${API_URL}/api/sessions/${session.sessionId}/expel/${studentId}`, { method: 'POST', headers: { Authorization: `Bearer ${auth.token}` } });
+    await fetch(`${API_URL}/api/sessions/${session.sessionId}/expel/${studentId}`, { method: 'POST', headers: { Authorization: `Bearer ${await freshToken(auth)}` } });
     setSession((current) => ({ ...current, students: current.students.map((student) => student.studentId === studentId ? { ...student, status: 'expelled' } : student) }));
   }
 
   async function finishStudent(studentId) {
-    const response = await fetch(`${API_URL}/api/sessions/${session.sessionId}/finish/${studentId}`, { method: 'POST', headers: { Authorization: `Bearer     ${auth.token}` } });
+    const response = await fetch(`${API_URL}/api/sessions/${session.sessionId}/finish/${studentId}`, { method: 'POST', headers: { Authorization: `Bearer ${await freshToken(auth)}` } });
     if (response.ok) setSession((current) => ({ ...current, students: current.students.map((student) => student.studentId === studentId ? { ...student, status: 'finished' } : student) }));
   }
 
