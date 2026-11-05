@@ -511,6 +511,7 @@ io.on('connection', (socket) => {
     if (!student && session.status === 'active' && !session.allowLate && !guest.late) return socket.emit('session:error', { message: LATE_MESSAGE });
 
     if (student) {
+      const wasOffline = student.status === 'offline';
       const previous = io.sockets.sockets.get(student.socketId);
       if (previous && previous.id !== socket.id) {
         previous.data.replaced = true;
@@ -532,7 +533,9 @@ io.on('connection', (socket) => {
       student.leftAt = null;
       // Reconectar con la pantalla visible tras haber estado oculta (o tras cerrar la página) es un retorno observable.
       if (hidden) classifySignal(student, 'tab_switch', { sessionStatus: session.status });
-      else if (stayedVisible) { student.visible = true; student.hiddenAt = null; student.hiddenSinceMs = null; }
+      // Un celular bloqueado se suspende y su conexión cae: si se reconecta tras estar caído, el alumno volvió a usarlo
+      // aunque el navegador no haya alcanzado a avisar que la página se ocultó.
+      else if (stayedVisible && !wasOffline) { student.visible = true; student.hiddenAt = null; student.hiddenSinceMs = null; }
       else handleReturn(session, student, { reload: true });
       // Si volver le costó el último aviso, queda expulsado y no se une a la sala.
       if (student.status === 'expelled') {
