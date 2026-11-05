@@ -9,7 +9,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { authFromToken, getUserProfile, registerAccountRoutes, requireAuth } from './accounts.js';
 import { registerCatalogRoutes, resolveCourse } from './catalog.js';
-import { logEvent, persistSession, registerRecordRoutes } from './records.js';
+import { logEvent, persistSession as persistNow, registerRecordRoutes } from './records.js';
 import { HIDE_SIGNALS, RETURN_SIGNAL, INCIDENT_PENDING, INCIDENT_CONFIRMED, INCIDENT_DISMISSED, classifySignal, isDuplicateEvent, markAbsent, applyStartGrace, START_GRACE_SECONDS } from './monitoring.js';
 import { limitGuestRegistrations, normalizeRut, signGuestToken, verifyGuestToken } from './guest.js';
 
@@ -17,9 +17,25 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: { origin: true },
-  pingInterval: 10_000,
-  pingTimeout: 8_000
+  // Con decenas de alumnos en la misma red, un ping perdido por saturación no debe sacar a nadie.
+  pingInterval: 20_000,
+  pingTimeout: 25_000
 });
+
+// Cada cambio reescribía el examen completo en Firestore y lo reenviaba a todos: con muchos alumnos eso saturaba el servidor.
+// Se agrupan los guardados (1 cada 5 s por sesión); al finalizar se guarda de inmediato.
+const persistTimers = new Map();
+function persistSession(session) {
+  if (session.status === 'ended') {
+    clearTimeout(persistTimers.get(session.sessionId));
+    persistTimers.delete(session.sessionId);
+    return persistNow(session);
+  }
+  if (!persistTimers.has(session.sessionId)) {
+    persistTimers.set(session.sessionId, setTimeout(() => { persistTimers.delete(session.sessionId); persistNow(session); }, 5000));
+  }
+  return Promise.resolve();
+}
 
 const sessions = new Map();
 const PORT = Number(process.env.PORT ?? 3001);
@@ -71,8 +87,7 @@ function studentView(session) {
     endsAt: session.endsAt,
     serverTime: new Date().toISOString(),
     maxStrikes: session.maxStrikes,
-    graceSeconds: START_GRACE_SECONDS,
-    students: [...session.students.values()].map(({ studentId, status }) => ({ studentId, status }))
+    graceSeconds: START_GRACE_SECONDS
   };
 }
 
@@ -140,6 +155,18 @@ function expelStudent(session, student, { reason, actor = null }) {
   persistSession(session);
 }
 
+// El profesor da por terminado el examen de un alumno que entregó antes de tiempo: no es una sanción y deja de monitorearse.
+function finishStudent(session, student, { actor = null } = {}) {
+  student.status = 'finished';
+  student.finishedAt = new Date().toISOString();
+  student.leftAt = null;
+  session.helpRequests = session.helpRequests.filter((request) => request.studentId !== student.studentId);
+  if (student.socketId) io.to(student.socketId).emit('student:finished', { examName: session.examName });
+  logEvent(session.sessionId, 'student_finished', { actor, student, data: { sessionStatus: session.status } });
+  emitSession(session);
+  persistSession(session);
+}
+
 const PRESENCE_ALERTS = new Set(['disconnected', 'reconnected', 'second_device']);
 
 const LOCK_ALERTS = new Set(['tab_switch', 'window_blur', 'screen_lock', 'page_closed', 'disconnected']);
@@ -178,9 +205,14 @@ function formatAway(seconds) {
   return minutes < 60 ? `${minutes} min ${seconds % 60} s` : `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
 }
 
+const emitTimers = new Map();
 function emitSession(session) {
-  io.to(profRoom(session)).emit('session:updated', publicSession(session));
-  io.to(stuRoom(session)).emit('session:updated', studentView(session));
+  if (emitTimers.has(session.sessionId)) return;
+  emitTimers.set(session.sessionId, setTimeout(() => {
+    emitTimers.delete(session.sessionId);
+    io.to(profRoom(session)).emit('session:updated', publicSession(session));
+    io.to(stuRoom(session)).emit('session:updated', studentView(session));
+  }, 400));
 }
 
 const LOGS_DIR = path.join(process.cwd(), 'logs');
@@ -277,6 +309,7 @@ app.post('/api/sessions/:sessionId/guest', limitGuestRegistrations, async (req, 
 
   const existing = [...session.students.values()].find((item) => item.identityKey === `rut:${rut}`);
   if (existing?.status === 'expelled') return res.status(403).json({ message: 'Fuiste expulsado de esta sesión y no puedes volver a entrar.' });
+  if (existing?.status === 'finished') return res.status(403).json({ message: 'Tu examen ya fue finalizado por el profesor.' });
   if (existing && existing.email !== email) return res.status(409).json({ message: 'Ese RUT ya está registrado en esta sesión con otro correo.' });
   if (!existing && session.status === 'active' && !session.allowLate) return res.status(409).json({ message: LATE_MESSAGE });
 
@@ -310,6 +343,17 @@ app.post('/api/sessions/:sessionId/expel/:studentId', requireAuth('profesor', 'a
   const student = session.students.get(req.params.studentId);
   if (!student) return res.status(404).json({ message: 'Estudiante no encontrado.' });
   expelStudent(session, student, { reason: 'professor', actor: req.auth });
+  res.json({ success: true });
+});
+
+app.post('/api/sessions/:sessionId/finish/:studentId', requireAuth('profesor', 'admin'), (req, res) => {
+  const session = sessions.get(req.params.sessionId);
+  if (!session) return res.status(404).json({ message: 'Sesión no encontrada.' });
+  if (session.professorEmail !== req.auth.email) return res.status(403).json({ message: 'No autorizado.' });
+  const student = session.students.get(req.params.studentId);
+  if (!student) return res.status(404).json({ message: 'Estudiante no encontrado.' });
+  if (!['active', 'offline'].includes(student.status)) return res.status(409).json({ message: 'Ese estudiante no está en el examen.' });
+  finishStudent(session, student, { actor: req.auth });
   res.json({ success: true });
 });
 
@@ -362,7 +406,7 @@ app.post('/api/sessions/:sessionId/incidents/:incidentId/review', requireAuth('p
   res.json({ success: true, incident });
 });
 // Alumnos registrados que no confirmaron haber guardado el teléfono. Cuenta a los desconectados: con el teléfono bloqueado la conexión cae.
-const notReadyStudents = (session) => [...session.students.values()].filter((student) => student.status !== 'expelled' && !student.ready);
+const notReadyStudents = (session) => [...session.students.values()].filter((student) => !['expelled', 'finished'].includes(student.status) && !student.ready);
 
 function startSession(session, actor, { force = false } = {}) {
   if (session.status !== 'waiting') return false;
@@ -447,6 +491,7 @@ io.on('connection', (socket) => {
     const identityKey = `rut:${guest.rut}`;
     let student = [...session.students.values()].find((item) => item.identityKey === identityKey);
     if (student?.status === 'expelled') return socket.emit('session:error', { message: 'Fuiste expulsado de esta sesión y no puedes volver a entrar.' });
+    if (student?.status === 'finished') return socket.emit('student:finished', { examName: session.examName });
     if (student && student.email !== guest.email) return socket.emit('session:error', { message: 'Ese RUT ya está registrado en esta sesión con otro correo.' });
     if (!student && session.status === 'active' && !session.allowLate && !guest.late) return socket.emit('session:error', { message: LATE_MESSAGE });
 
@@ -497,7 +542,7 @@ io.on('connection', (socket) => {
   socket.on('student:event', ({ sessionId, type, message, eventId, tabInstanceId, sequenceNumber, sinceInteractionMs } = {}) => {
     const session = sessions.get(sessionId);
     const student = session?.students.get(socket.data.studentId);
-    if (!session || !student || student.socketId !== socket.id || student.status === 'expelled') return;
+    if (!session || !student || student.socketId !== socket.id || ['expelled', 'finished'].includes(student.status)) return;
     // Antes del inicio solo se sigue la visibilidad (el bloqueo inicial); el resto de eventos no aplica.
     const visibilitySignal = type === RETURN_SIGNAL || HIDE_SIGNALS.has(type);
     if (session.status !== 'active' && !(session.status === 'waiting' && visibilitySignal)) return;

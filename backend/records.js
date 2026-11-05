@@ -9,7 +9,7 @@ const EVENT_CATEGORIES = {
   student_joined: 'presence', student_left: 'presence', student_reconnected: 'presence', student_replaced: 'presence',
   alert: 'alert',
   help_requested: 'help', help_cancelled: 'help', help_resolved: 'help',
-  student_expelled: 'moderation', student_readmitted: 'moderation', late_join_toggled: 'session',
+  student_expelled: 'moderation', student_finished: 'moderation', student_readmitted: 'moderation', late_join_toggled: 'session',
   review_set: 'review', notes_updated: 'review', record_archived: 'review', report_exported: 'review'
 };
 

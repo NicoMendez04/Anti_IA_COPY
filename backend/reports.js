@@ -5,7 +5,7 @@ const DATE_FORMAT = 'dd-mm-yyyy hh:mm:ss';
 
 const REVIEW_LABELS = { '': 'Sin revisar', clear: 'Sin observaciones', suspicious: 'Sospechoso', annulled: 'Anulado' };
 const EXAM_STATUS = { waiting: 'En espera', active: 'En curso', ended: 'Finalizado' };
-const STUDENT_STATUS = { active: 'Conectado', offline: 'Desconectado', expelled: 'Expulsado' };
+const STUDENT_STATUS = { active: 'Conectado', offline: 'Desconectado', expelled: 'Expulsado', finished: 'Examen finalizado' };
 const ALERT_LABELS = { tab_switch: 'Cambio de pestaña', window_blur: 'Pérdida de foco', screen_lock: 'Pantalla oculta o bloqueada', disconnected: 'Desconexión', reconnected: 'Reconexión', second_device: 'Otro dispositivo', auto_expelled: 'Expulsión automática', copy: 'Copiar', cut: 'Cortar', paste: 'Pegar', context_menu: 'Menú contextual', print: 'Imprimir', screenshot_key: 'Captura de pantalla', shortcut: 'Atajo de teclado', returned: 'Volvió a la pantalla', orientation_change: 'Giro de pantalla', idle: 'Sin interacción', other: 'Otra actividad' };
 const SEVERITY_LABELS = { info: 'Informativa', warning: 'Advertencia', critical: 'Crítica' };
 const CATEGORY_LABELS = { session: 'Sesión', presence: 'Presencia', alert: 'Alertas', help: 'Ayuda', moderation: 'Moderación', review: 'Revisión' };
@@ -13,7 +13,7 @@ const EVENT_LABELS = {
   session_created: 'Sesión creada', session_started: 'Examen iniciado', session_ended: 'Examen finalizado',
   student_joined: 'Alumno ingresó', student_left: 'Alumno salió', student_reconnected: 'Alumno volvió', student_replaced: 'Sesión abierta en otro dispositivo',
   alert: 'Alerta', help_requested: 'Pidió ayuda', help_cancelled: 'Canceló su pedido de ayuda', help_resolved: 'Ayuda atendida',
-  student_expelled: 'Alumno expulsado', student_readmitted: 'Alumno readmitido', late_join_toggled: 'Ingreso tardío', review_set: 'Revisión del profesor', notes_updated: 'Notas del examen actualizadas',
+  student_expelled: 'Alumno expulsado', student_finished: 'Examen del alumno finalizado', student_readmitted: 'Alumno readmitido', late_join_toggled: 'Ingreso tardío', review_set: 'Revisión del profesor', notes_updated: 'Notas del examen actualizadas',
   record_archived: 'Registro archivado', report_exported: 'Informe exportado'
 };
 

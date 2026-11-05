@@ -48,11 +48,11 @@ export function normalizeRut(input) {
 }
 
 const attempts = new Map();
-/** Límite simple por IP para el registro de invitados. */
+/** Límite por IP para el registro de invitados; un aula entera comparte la misma IP, por eso es holgado. */
 export function limitGuestRegistrations(req, res, next) {
   const now = Date.now();
   const recent = (attempts.get(req.ip) ?? []).filter((time) => now - time < 60_000);
-  if (recent.length >= 30) return res.status(429).json({ message: 'Demasiados intentos. Espera un minuto e inténtalo de nuevo.' });
+  if (recent.length >= 400) return res.status(429).json({ message: 'Demasiados intentos. Espera un minuto e inténtalo de nuevo.' });
   recent.push(now);
   attempts.set(req.ip, recent);
   next();

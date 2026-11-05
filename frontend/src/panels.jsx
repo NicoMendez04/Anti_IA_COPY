@@ -4,13 +4,13 @@ import { Link, useLocation } from 'react-router-dom';
 const AVATAR_COLORS = ['#c9f469', '#f4e3a6', '#e6c3bb', '#bfd8f2', '#d9c8f0', '#c7e8d5'];
 const REVIEW_LABELS = { '': 'Sin revisar', clear: 'Sin observaciones', suspicious: 'Sospechoso', annulled: 'Anulado' };
 const EXAM_STATUS = { waiting: 'En espera', active: 'En curso', ended: 'Finalizado' };
-const STUDENT_STATUS = { active: 'Conectado', offline: 'Desconectado', expelled: 'Expulsado' };
+const STUDENT_STATUS = { active: 'Conectado', offline: 'Desconectado', expelled: 'Expulsado', finished: 'Examen finalizado' };
 const ALERT_LABELS = { ready_lost: 'Volvió a la pantalla antes del inicio', tab_switch: 'Página oculta', window_blur: 'Pérdida de foco', screen_lock: 'Pantalla oculta o bloqueada', disconnected: 'Desconexión', reconnected: 'Reconexión', second_device: 'Otro dispositivo', auto_expelled: 'Expulsión automática', copy: 'Copiar', cut: 'Cortar', paste: 'Pegar', context_menu: 'Menú contextual', print: 'Imprimir', screenshot_key: 'Captura de pantalla', shortcut: 'Atajo de teclado', phone_unlock: 'Desbloqueó el teléfono', away_strike: 'Aviso por ausencia', page_closed: 'Cerró o recargó la página', minor_shortcut: 'Atajo menor (sin aviso)', returned: 'Retorno detectado', orientation_change: 'Giro de pantalla', idle: 'Sin interacción', other: 'Otra actividad' };
 const EVENT_LABELS = {
   session_created: 'Sesión creada', session_started: 'Examen iniciado', session_ended: 'Examen finalizado',
   student_joined: 'Alumno ingresó', student_left: 'Alumno salió', student_reconnected: 'Alumno volvió', student_replaced: 'Sesión abierta en otro dispositivo',
   alert: 'Alerta', help_requested: 'Pidió ayuda', help_cancelled: 'Canceló su pedido de ayuda', help_resolved: 'Ayuda atendida',
-  student_expelled: 'Alumno expulsado', student_readmitted: 'Alumno readmitido', late_join_toggled: 'Ingreso tardío', review_set: 'Revisión del profesor', notes_updated: 'Notas del examen actualizadas', record_archived: 'Registro archivado'
+  student_expelled: 'Alumno expulsado', student_finished: 'Examen del alumno finalizado', student_readmitted: 'Alumno readmitido', late_join_toggled: 'Ingreso tardío', review_set: 'Revisión del profesor', notes_updated: 'Notas del examen actualizadas', record_archived: 'Registro archivado'
 };
 const SEVERITY_LABELS = { info: 'Informativa', warning: 'Advertencia', critical: 'Crítica' };
 const CATEGORY_LABELS = { session: 'Sesión', presence: 'Presencia', alert: 'Alertas', help: 'Ayuda', moderation: 'Moderación', review: 'Revisión' };
